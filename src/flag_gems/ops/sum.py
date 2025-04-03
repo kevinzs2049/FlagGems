@@ -6,12 +6,13 @@ import triton
 import triton.language as tl
 
 from .. import runtime
-from ..runtime import torch_device_fn
-from ..utils import dim_compress, libentry
+
+# from ..runtime import torch_device_fn
+from ..utils import dim_compress  # libentry
 from ..utils import triton_lang_extension as tle
 
 
-@libentry()
+# @libentry()
 @triton.jit
 def sum_kernel_1(
     inp,
@@ -37,7 +38,7 @@ def sum_kernel_1(
     tl.store(mid_ptr, sum_val)
 
 
-@libentry()
+# @libentry()
 @triton.jit
 def sum_kernel_2(mid, out, mid_size, BLOCK_MID: tl.constexpr):
     if tl.constexpr(mid.dtype.element_ty == tl.float16) or tl.constexpr(
@@ -55,7 +56,7 @@ def sum_kernel_2(mid, out, mid_size, BLOCK_MID: tl.constexpr):
     tl.store(out, sum_val)
 
 
-@libentry()
+# @libentry()
 @triton.autotune(configs=runtime.get_tuned_config("sum"), key=["M", "N"])
 @triton.jit
 def sum_kernel(
@@ -106,9 +107,9 @@ def sum(inp, *, dtype=None):
     mid = torch.empty((mid_size,), dtype=dtype, device=inp.device)
     out = torch.empty([], dtype=dtype, device=inp.device)
 
-    with torch_device_fn.device(inp.device):
-        sum_kernel_1[(mid_size, 1, 1)](inp, mid, M, block_size)
-        sum_kernel_2[(1, 1, 1)](mid, out, mid_size, block_mid)
+    # with torch_device_fn.device(inp.device):
+    sum_kernel_1[(mid_size, 1, 1)](inp, mid, M, block_size)
+    sum_kernel_2[(1, 1, 1)](mid, out, mid_size, block_mid)
     return out
 
 
@@ -138,8 +139,8 @@ def sum_dim(inp, dim=None, keepdim=False, *, dtype=None):
     out = torch.empty(shape, dtype=dtype, device=inp.device)
 
     grid = lambda meta: (triton.cdiv(M, meta["BLOCK_M"]),)
-    with torch_device_fn.device(inp.device):
-        sum_kernel[grid](inp, out, M, N)
+    # with torch_device_fn.device(inp.device):
+    sum_kernel[grid](inp, out, M, N)
     if not keepdim:
         out = out.squeeze(dim=dim)
     return out

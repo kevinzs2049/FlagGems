@@ -7,12 +7,13 @@ import triton
 import triton.language as tl
 
 from .. import runtime
-from ..runtime import torch_device_fn
-from ..utils import libentry
+
+# from ..runtime import torch_device_fn
+# from ..utils import libentry
 from ..utils import triton_lang_extension as tle
 
 
-@libentry()
+# @libentry()
 @triton.jit
 def max_kernel_1(
     inp,
@@ -30,7 +31,7 @@ def max_kernel_1(
     tl.store(mid_ptr, max_val)
 
 
-@libentry()
+# @libentry()
 @triton.jit
 def max_kernel_2(mid, out, mid_size, BLOCK_MID: tl.constexpr):
     offset = tl.arange(0, BLOCK_MID)
@@ -41,11 +42,33 @@ def max_kernel_2(mid, out, mid_size, BLOCK_MID: tl.constexpr):
     tl.store(out, max_val)
 
 
+@triton.autotune(
+    configs=[
+        triton.Config({"BLOCK_SIZE": 1}, num_warps=1),
+        triton.Config({"BLOCK_SIZE": 8}, num_warps=1),
+        triton.Config({"BLOCK_SIZE": 2}, num_warps=2),
+        triton.Config({"BLOCK_SIZE": 16}, num_warps=4),
+        triton.Config({"BLOCK_SIZE": 32}, num_warps=4),
+    ],
+    key=["M"],  # 当张量大小变化时触发调优
+)
+# @libentry()
+@triton.jit
+def max_kernel_3(inp, out, M, BLOCK_SIZE: tl.constexpr):
+    pid = tl.program_id(0)
+    start = pid * BLOCK_SIZE
+    offsets = start + tl.arange(0, BLOCK_SIZE)
+    mask = offsets < M
+    x = tl.load(inp + offsets, mask=mask)
+    min_val = tl.max(x, axis=None)
+    tl.atomic_max(out, min_val)
+
+
 def heur_block_n(args):
     return triton.next_power_of_2(args["N"])
 
 
-@libentry()
+# @libentry()
 @triton.autotune(
     configs=runtime.get_tuned_config("max"),
     key=[
@@ -91,24 +114,27 @@ def max_kernel(
 
 
 def max(inp):
-    logging.debug("GEMS MAX")
     inp = inp.contiguous()
     M = inp.numel()
-    block_size = triton.next_power_of_2(math.ceil(math.sqrt(M)))
-    mid_size = triton.cdiv(M, block_size)
-    block_mid = triton.next_power_of_2(mid_size)
+    # block_size = triton.next_power_of_2(math.ceil(math.sqrt(M)))
+    # block_size = 16
+    # mid_size = triton.cdiv(M, block_size)
+    # block_mid = triton.next_power_of_2(mid_size)
 
     dtype = inp.dtype
-    mid = torch.empty((mid_size,), dtype=dtype, device=inp.device)
+    # mid = torch.empty((mid_size,), dtype=dtype, device=inp.device)
     out = torch.empty([], dtype=dtype, device=inp.device)
 
-    with torch_device_fn.device(inp.device):
-        max_kernel_1[(mid_size, 1, 1)](inp, mid, M, block_size)
-        max_kernel_2[(1, 1, 1)](mid, out, mid_size, block_mid)
+    grid = lambda meta: (triton.cdiv(M, meta["BLOCK_SIZE"]),)
+    max_kernel_3[grid](inp, out, M)
+    # with torch_device_fn.device(inp.device):
+    # max_kernel_1[(mid_size, 1, 1)](inp, mid, M, block_size)
+    # max_kernel_2[(1, 1, 1)](mid, out, mid_size, block_mid)
     return out
 
 
 def max_dim(inp, dim=None, keepdim=False):
+    print("***")
     logging.debug("GEMS MAX DIM")
     assert dim >= -inp.ndim and dim < inp.ndim, "Invalid dim"
     shape = inp.shape
@@ -132,8 +158,8 @@ def max_dim(inp, dim=None, keepdim=False):
         triton.cdiv(M, meta["BLOCK_M"]),
         K,
     )
-    with torch_device_fn.device(inp.device):
-        max_kernel[grid](inp, out_value, out_index, M, N, K)
+    # with torch_device_fn.device(inp.device):
+    max_kernel[grid](inp, out_value, out_index, M, N, K)
     Max_out = namedtuple("max", ["values", "indices"])
     out = Max_out(values=out_value, indices=out_index)
     return out
