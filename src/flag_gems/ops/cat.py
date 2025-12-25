@@ -41,6 +41,20 @@ def cat_kernel(
     val = tl.load(in_ptr + in_offset, mask=mask)
     tl.store(out_ptr + out_offset, val, mask=mask)
 
+@triton.jit
+def cat_kernel_dim0_contig(
+        in_ptr,
+        out_ptr,
+        offset,
+        total_elements,
+        BLOCK_SIZE: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = offs < total_elements
+    tl.store(out_ptr + offset + offs, tl.load(in_ptr + offs, mask=mask), mask=mask)
+
+
 
 def cat(
     A: Union[Tuple[torch.Tensor, ...], List[torch.Tensor]], dim: int = 0
@@ -54,6 +68,15 @@ def cat(
 
     dim = dim % A[0].ndim
     base_shape = A[0].shape
+
+    contiguous_dim0 = (
+            dim == 0
+            and all(
+        t.is_contiguous() and t.device == A[0].device and t.dtype == A[0].dtype
+        for t in A
+    )
+    )
+
 
     for t in A:
         if t.ndim != len(base_shape):
@@ -78,10 +101,30 @@ def cat(
         if t.numel() == 0:
             continue
 
+        if contiguous_dim0:
+            # Specialized contiguous dim-0 copy avoids per-dimension stride math
+            # and is cheaper to launch on CPU Triton backend.
+            total_elements = t.numel()
+            block_size = 256 if t.device.type == "cpu" else 128
+            grid = lambda META: (triton.cdiv(total_elements, META["BLOCK_SIZE"]),)
+            cat_kernel_dim0_contig[grid](
+                in_ptr=t,
+                out_ptr=out,
+                offset=offset,
+                total_elements=total_elements,
+                BLOCK_SIZE=block_size,
+            )
+            offset += t.shape[0] * out.stride()[0]
+            continue
+
         in_strides = torch.tensor(t.stride(), dtype=torch.int32, device=t.device)
         shape_tensor = torch.tensor(t.shape, dtype=torch.int32, device=t.device)
         total_elements = t.numel()
 
+        # Use a larger tile on CPU to better amortize kernel launch overhead and
+        # enable vectorization. Keep a smaller tile elsewhere to avoid bloating
+        # register pressure on GPU backends.
+        block_size = 256 if t.device.type == "cpu" else 128
         grid = lambda META: (triton.cdiv(total_elements, META["BLOCK_SIZE"]),)
         cat_kernel[grid](
             in_ptr=t,
@@ -92,7 +135,7 @@ def cat(
             offset=offset,
             total_elements=total_elements,
             ndim=t.ndim,
-            BLOCK_SIZE=8,
+            BLOCK_SIZE=block_size,
         )
 
         offset += t.shape[dim] * out.stride()[dim]
