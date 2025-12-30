@@ -1,17 +1,44 @@
 import torch
 import triton
+import logging
+
+
+def _prefer_big_core_tiles() -> bool:
+    """
+    ARM big.LITTLE chips (e.g., Cortex-A720 + Cortex-A520) benefit from slightly
+    larger tiles when enough threads are available. Use a simple heuristic based
+    on the available torch threads to bias tile choices toward bigger cores.
+    """
+    return torch.get_num_threads() >= 8
 
 
 def argmax_heur_block_m(args):
-    return 4 if args["M"] < 4096 else 8
+    if args["M"] >= 16384 and _prefer_big_core_tiles():
+        logging.warning("argmax_heur_block_m: 16")
+        return 16
+    elif args["M"] >= 4096:
+        print("argmax_heur_block_m: 8")
+        return 8
+    else:
+        logging.debug("argmax_heur_block_m: 4")
+        return 4
 
 
 def argmax_heur_block_n(args):
-    return min(4, triton.next_power_of_2(args["N"]))
+    upper = 8 if _prefer_big_core_tiles() else 4
+    logging.debug("argmax_heur_block_m:", upper)
+    logging.debug("triton.next_power_of_2(argsN: ", args["N"])
+    return min(upper, triton.next_power_of_2(args["N"]))
 
 
 def argmin_heur_block_m(args):
-    return 4 if args["M"] < 4096 else 8
+    if args["M"] >= 16384 and _prefer_big_core_tiles():
+        return 16
+    elif args["M"] >= 4096:
+        return 8
+    else:
+        return 4
+
 
 
 def argmin_heur_block_n(args):
@@ -130,12 +157,20 @@ def softmax_heur_tile_k(args):
     #     else:
     #         break
     # return tile_k
+    # Prefer larger tiles on big cores when it keeps the working set in cache.
+    # Rough rule: TILE_K * TILE_N * sizeof(dtype) should fit comfortably in L1/L2.
+    logging.debug("softmax_heur_tile_k: 64")
+    if _prefer_big_core_tiles():
+        return 64 if args["K"] >= 64 else 32
     return 16
 
 
 def softmax_heur_tile_n_non_inner(args):
-    #return triton.cdiv(8192, args["TILE_K"])
-    return 16
+    # A720 cores can sustain larger N tiles without thrashing cache; keep a
+    # modest cap for little cores.
+    base = 64 if _prefer_big_core_tiles() else 16
+    logging.debug("triton.cdiv(2048, args TILE_K ): ", triton.cdiv(2048, args["TILE_K"]))
+    return min(base, triton.cdiv(2048, args["TILE_K"]))
 
 
 def softmax_heur_one_tile_per_cta(args):
@@ -153,11 +188,10 @@ def softmax_heur_num_warps_non_inner(args):
 
 
 def softmax_heur_tile_n_inner(args):
-    # if args["N"] <= (32 * 1024):
-    #     return triton.next_power_of_2(args["N"])
-    # else:
-    #     return 4096
-    return 4
+    # Keep inner softmax tiles small for latency on little cores, but allow a
+    # wider tile when big cores are present.
+    if _prefer_big_core_tiles() and args["N"] > 1024:
+        return 8
 
 
 def softmax_heur_num_warps_inner(args):

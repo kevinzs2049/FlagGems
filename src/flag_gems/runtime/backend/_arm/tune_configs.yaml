@@ -10,6 +10,17 @@ attention:
   pre_load_v:
   - true
   - false
+- gen: true
+  param_map:
+    META:
+      BLOCK_M: 8
+      BLOCK_N: 8
+      PRE_LOAD_V: pre_load_v
+    num_warps: 8
+    num_stages: 4
+  pre_load_v:
+    - true
+    - false
 bmm:
 - META:
     TILE_M: 4
@@ -18,6 +29,13 @@ bmm:
     GROUP_M: 1
   num_warps: 4
   num_stages: 2
+- META:
+    TILE_M: 8
+    TILE_N: 8
+    TILE_K: 8
+    GROUP_M: 1
+  num_warps: 4
+  num_stages: 3
 argmax:
 - META:
     BLOCK_M: 8
@@ -58,12 +76,32 @@ mm:
     SPLIT_K: 1
   num_stages: 4
   num_warps: 4
+- META:
+    BLOCK_M: 16
+    BLOCK_N: 16
+    BLOCK_K: 16
+    SPLIT_K: 1
+  num_stages: 3
+  num_warps: 4
+- META:
+    BLOCK_M: 32
+    BLOCK_N: 8
+    BLOCK_K: 16
+    SPLIT_K: 2
+  num_stages: 3
+  num_warps: 8
 softmax_non_inner:
 - META:
     TILE_K: 4
+- META:
+    TILE_K: 32
+- META:
+    TILE_K: 64
 softmax_inner:
 - META:
     TILE_N: 4
+- META:
+    TILE_N: 8
 test_libentry:
 - META:
     TILE_N: 32

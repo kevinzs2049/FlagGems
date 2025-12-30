@@ -137,7 +137,12 @@ class ConfigLoader(object):
                 return self.to_gen_config(single_config)
 
         for single_config in current_op_configs:
-            current_config = self.triton_config_default
+            # Handle generated configs even when mixed with fixed configs.
+            if self.gen_key in single_config:
+                configs.extend(self.to_gen_config(single_config))
+                continue
+
+            current_config = copy.deepcopy(self.triton_config_default)
             for default_param in current_config:
                 if default_param in single_config:
                     current_config[default_param] = single_config[default_param]

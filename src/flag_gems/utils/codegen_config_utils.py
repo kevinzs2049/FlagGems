@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 from typing import Tuple
 
@@ -29,6 +30,11 @@ def metax_heuristics_for_num_warps(tile_size):
 def cambricon_heuristics_for_num_warps(tile_size):
     return 1
 
+
+def cpu_heuristics_for_num_warps(tile_size):
+    if tile_size <= 512:
+        return 2
+    return 4
 
 @dataclass
 class CodeGenConfig:
@@ -84,12 +90,20 @@ CODEGEN_COFIGS = {
         True,
         prefer_1d_tile=True,
     ),
+    vendors.ARM: CodeGenConfig(
+        256,
+        (os.cpu_count() or 1, 1, 1),
+        2,
+        False,
+        prefer_1d_tile=True,
+    ),
 }
 
 HEURISTICS_CONFIG = {
     vendors.NVIDIA: default_heuristics_for_num_warps,
     vendors.METAX: metax_heuristics_for_num_warps,
     vendors.CAMBRICON: cambricon_heuristics_for_num_warps,
+    vendors.ARM: cpu_heuristics_for_num_warps,
 }
 
 
@@ -100,6 +114,11 @@ def get_codegen_config():
 
 
 def get_heuristics_for_num_warps(tile_size):
-    if device.vendor not in HEURISTICS_CONFIG:
-        return HEURISTICS_CONFIG.get(vendors.NVIDIA)(tile_size)
-    return HEURISTICS_CONFIG.get(device.vendor)(tile_size)
+    config = get_codegen_config() or CODEGEN_COFIGS.get(vendors.NVIDIA)
+    heuristics_fn = HEURISTICS_CONFIG.get(
+        device.vendor, HEURISTICS_CONFIG.get(vendors.NVIDIA)
+    )
+    num_warps = heuristics_fn(tile_size)
+    if config is not None:
+        num_warps = min(num_warps, config.max_num_warps_per_cta)
+    return max(1, num_warps)
