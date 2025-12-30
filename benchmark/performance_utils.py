@@ -33,7 +33,8 @@ vendor_name = flag_gems.vendor_name
 if device == "musa":
     torch.backends.mudnn.allow_tf32 = False
 else:
-    torch_backend_device.matmul.allow_tf32 = False
+    if hasattr(torch_backend_device, 'matmul'):
+        torch_backend_device.matmul.allow_tf32 = False
 
 
 def SkipVersion(module_name, skip_pattern):
