@@ -17,8 +17,11 @@ def silu_forward_kernel(output_ptr, input_ptr, n_elements, BLOCK_SIZE: tl.conste
     mask = offsets < n_elements
 
     x = tl.load(input_ptr + offsets, mask=mask)
-    sigmoid = 1.0 / (1.0 + tl.exp(-x))
-    y = x * sigmoid
+
+    x_fp32 = x.to(tl.float32)
+    sigmoid = 1.0 / (1.0 + tl.exp(-x_fp32))
+    y_fp32 = x_fp32 * sigmoid
+    y = y_fp32.to(x.dtype)
 
     tl.store(output_ptr + offsets, y, mask=mask)
 
