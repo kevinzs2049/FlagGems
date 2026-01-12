@@ -6,10 +6,10 @@ import flag_gems
 
 device = "cpu"
 tokenizer = AutoTokenizer.from_pretrained(
-    "/home/ubuntu/.cache/modelscope/hub/models/Qwen/Qwen3-0.6B"
+    "/home/kevin/.cache/modelscope/hub/models/Qwen/Qwen3-0.6B"
 )
 model = AutoModelForCausalLM.from_pretrained(
-    "/home/ubuntu/.cache/modelscope/hub/models/Qwen/Qwen3-0.6B"
+    "/home/kevin/.cache/modelscope/hub/models/Qwen/Qwen3-0.6B"
 )
 model.to(device).eval()
 
