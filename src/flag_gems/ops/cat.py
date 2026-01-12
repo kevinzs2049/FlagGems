@@ -1,3 +1,4 @@
+# import itertools
 import logging
 from typing import List, Tuple, Union
 
@@ -5,211 +6,138 @@ import torch
 import triton
 import triton.language as tl
 
-logger = logging.getLogger(__name__)
-
 
 @triton.jit
-def cat_copy_func_kernel_4(
+def cat_kernel(
+    in_ptr,
     out_ptr,
-    in_ptr_a,
-    in_ptr_b,
-    in_ptr_c,
-    in_ptr_d,
-    dim_size_in_a,
-    dim_size_in_b,
-    dim_size_in_c,
-    dim_size_in_d,
-    dim_size_out,
-    dim_prod_post,
-    dim_offset_a,
-    dim_offset_b,
-    dim_offset_c,
-    dim_offset_d,
-    total_elements_a,
-    total_elements_b,
-    total_elements_c,
-    total_elements_d,
-    BLOCK_X: tl.constexpr,
+    in_strides_ptr,
+    out_strides_ptr,
+    shape_ptr,
+    offset,
+    total_elements,
+    ndim: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
 ):
-    pid_x = tl.program_id(0)
-    pid_y = tl.program_id(1)
+    pid = tl.program_id(0)
+    offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = offs < total_elements
 
-    if pid_y == 0:
-        in_ptr = in_ptr_a
-        dim_size_in = dim_size_in_a
-        dim_offset = dim_offset_a
-        total_elements = total_elements_a
-    elif pid_y == 1:
-        in_ptr = in_ptr_b
-        dim_size_in = dim_size_in_b
-        dim_offset = dim_offset_b
-        total_elements = total_elements_b
-    elif pid_y == 2:
-        in_ptr = in_ptr_c
-        dim_size_in = dim_size_in_c
-        dim_offset = dim_offset_c
-        total_elements = total_elements_c
-    else:
-        in_ptr = in_ptr_d
-        dim_size_in = dim_size_in_d
-        dim_offset = dim_offset_d
-        total_elements = total_elements_d
+    linear_id = offs
+    in_offset = tl.zeros([BLOCK_SIZE], dtype=tl.int32)
+    out_offset = tl.full([BLOCK_SIZE], offset, dtype=tl.int32)
 
-    block_start = pid_x * BLOCK_X
-    offsets = tl.arange(0, BLOCK_X)
-    mask = block_start + offsets < total_elements
+    for d in range(ndim):
+        shape_d = tl.load(shape_ptr + d)
+        in_stride = tl.load(in_strides_ptr + d)
+        out_stride = tl.load(out_strides_ptr + d)
 
-    idx = block_start + offsets
+        coord = linear_id % shape_d
+        linear_id = linear_id // shape_d
 
-    pre_idx = idx // (dim_size_in * dim_prod_post)
-    dim_idx = (idx // dim_prod_post) % dim_size_in
-    post_idx = idx % dim_prod_post
+        in_offset += coord * in_stride
+        out_offset += coord * out_stride
 
-    out_idx = (
-        pre_idx * dim_size_out * dim_prod_post
-        + (dim_idx + dim_offset) * dim_prod_post
-        + post_idx
-    )
+    val = tl.load(in_ptr + in_offset, mask=mask)
+    tl.store(out_ptr + out_offset, val, mask=mask)
 
-    data = tl.load(in_ptr + idx, mask=mask)
-    tl.store(out_ptr + out_idx, data, mask=mask)
+@triton.jit
+def cat_kernel_dim0_contig(
+        in_ptr,
+        out_ptr,
+        offset,
+        total_elements,
+        BLOCK_SIZE: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = offs < total_elements
+    tl.store(out_ptr + offset + offs, tl.load(in_ptr + offs, mask=mask), mask=mask)
+
 
 
 def cat(
     A: Union[Tuple[torch.Tensor, ...], List[torch.Tensor]], dim: int = 0
 ) -> torch.Tensor:
-    logger.debug("GEMS CAT")
+    logging.debug("TRITON CAT")
+
     if len(A) == 0:
         raise RuntimeError("torch.cat(): expected a non-empty list of Tensors")
     if len(A) == 1:
         return A[0]
 
-    # remove torch.Size([0]) tensors
-    device = A[0].device
-    dtype = A[0].dtype
-    A = list(A)
-    for i in range(len(A) - 1, -1, -1):
-        if A[i].shape == torch.Size([0]):
-            A.pop(i)
-    if len(A) == 0:
-        return torch.tensor([], device=device, dtype=dtype)
-    elif len(A) == 1:
-        return A[0]
+    dim = dim % A[0].ndim
+    base_shape = A[0].shape
 
-    assert dim >= -A[0].ndim and dim < A[0].ndim, f"Invalid dim: {dim}"
-    dim %= A[0].ndim
+    contiguous_dim0 = (
+            dim == 0
+            and all(
+        t.is_contiguous() and t.device == A[0].device and t.dtype == A[0].dtype
+        for t in A
+    )
+    )
 
-    # Same rank check
-    inp_shapes = [list(_.shape) for _ in A]
-    inp0_shape = inp_shapes[0]
-    for s in inp_shapes[1:]:
-        if len(s) != len(inp0_shape):
-            raise RuntimeError(
-                f"Tensors must have same number of dimensions: got {len(inp0_shape)} and {len(s)}"
+
+    for t in A:
+        if t.ndim != len(base_shape):
+            raise RuntimeError("Tensors must have the same number of dimensions")
+        for i in range(t.ndim):
+            if i != dim and t.shape[i] != base_shape[i]:
+                raise RuntimeError(f"Size mismatch at dim {i}")
+
+    if all(t.numel() == 0 for t in A):
+        empty_shape = list(base_shape)
+        empty_shape[dim] = 0
+        return torch.empty(empty_shape, dtype=A[0].dtype, device=A[0].device)
+
+    out_shape = list(base_shape)
+    out_shape[dim] = sum(t.shape[dim] for t in A)
+    out = torch.empty(out_shape, dtype=A[0].dtype, device=A[0].device)
+
+    out_strides = torch.tensor(out.stride(), dtype=torch.int32, device=out.device)
+    offset = 0
+
+    for t in A:
+        if t.numel() == 0:
+            continue
+
+        if contiguous_dim0:
+            # Specialized contiguous dim-0 copy avoids per-dimension stride math
+            # and is cheaper to launch on CPU Triton backend.
+            total_elements = t.numel()
+            block_size = 256 if t.device.type == "cpu" else 128
+            grid = lambda META: (triton.cdiv(total_elements, META["BLOCK_SIZE"]),)
+            cat_kernel_dim0_contig[grid](
+                in_ptr=t,
+                out_ptr=out,
+                offset=offset,
+                total_elements=total_elements,
+                BLOCK_SIZE=block_size,
             )
-    for tensor_idx, inp_shape in enumerate(inp_shapes):
-        for idx, (common_length, length) in enumerate(zip(inp0_shape, inp_shape)):
-            if idx != dim and length != common_length:
-                raise RuntimeError(
-                    f"Sizes of tensors must match except in dimension {dim}. "
-                    f"Expected size {common_length} but got size {length} for tensor number "
-                    f"{tensor_idx} in the list"
-                )
+            offset += t.shape[0] * out.stride()[0]
+            continue
 
-    # Type promotion: find the common dtype for all tensors
-    device = A[0].device
-    dtypes = [t.dtype for t in A]
-    dtype = dtypes[0]
-    for dt in dtypes[1:]:
-        dtype = torch.promote_types(dtype, dt)
-    # Convert all tensors to the common dtype if needed
-    A = [t.to(dtype) if t.dtype != dtype else t for t in A]
+        in_strides = torch.tensor(t.stride(), dtype=torch.int32, device=t.device)
+        shape_tensor = torch.tensor(t.shape, dtype=torch.int32, device=t.device)
+        total_elements = t.numel()
 
-    shapes = [t.shape for t in A]
-    cat_dim_sizes = [s[dim] for s in shapes]
-    out_shape = list(shapes[0])
-    out_shape[dim] = sum(cat_dim_sizes)
-    out = torch.empty(out_shape, dtype=dtype, device=device)
-
-    BLOCK = 1024
-    dim_offset = 0
-
-    i = 0
-    while i < len(A):
-        tensors_in_batch = A[i : i + 4]
-        num_tensors_in_batch = len(tensors_in_batch)
-
-        args = []
-        total_elements_list = []
-        current_dim_offset = dim_offset
-
-        for j in range(4):
-            if j < num_tensors_in_batch:
-                tensor = tensors_in_batch[j].contiguous()
-                shape = tensor.shape
-                total_elements = tensor.numel()
-                dim_size_in = shape[dim]
-
-                args.extend([tensor, dim_size_in, current_dim_offset, total_elements])
-                total_elements_list.append(total_elements)
-                current_dim_offset += dim_size_in
-            else:
-                # Add placeholders for unused tensor slots
-                args.extend([tensors_in_batch[0], 0, 0, 0])
-                total_elements_list.append(0)
-
-        dim_size_out = out_shape[dim]
-        dim_prod_post = 1
-        for d in range(dim + 1, A[0].ndim):
-            dim_prod_post *= A[0].shape[d]
-
-        grid_y = num_tensors_in_batch
-        max_elements_in_batch = max(total_elements_list) if total_elements_list else 0
-        grid = (triton.cdiv(max_elements_in_batch, BLOCK), grid_y)
-
-        (
-            tensor_a,
-            dim_size_in_a,
-            dim_offset_a,
-            total_elements_a,
-            tensor_b,
-            dim_size_in_b,
-            dim_offset_b,
-            total_elements_b,
-            tensor_c,
-            dim_size_in_c,
-            dim_offset_c,
-            total_elements_c,
-            tensor_d,
-            dim_size_in_d,
-            dim_offset_d,
-            total_elements_d,
-        ) = args
-
-        cat_copy_func_kernel_4[grid](
-            out,
-            tensor_a,
-            tensor_b,
-            tensor_c,
-            tensor_d,
-            dim_size_in_a,
-            dim_size_in_b,
-            dim_size_in_c,
-            dim_size_in_d,
-            dim_size_out,
-            dim_prod_post,
-            dim_offset_a,
-            dim_offset_b,
-            dim_offset_c,
-            dim_offset_d,
-            total_elements_a,
-            total_elements_b,
-            total_elements_c,
-            total_elements_d,
-            BLOCK_X=BLOCK,
+        # Use a larger tile on CPU to better amortize kernel launch overhead and
+        # enable vectorization. Keep a smaller tile elsewhere to avoid bloating
+        # register pressure on GPU backends.
+        block_size = 256 if t.device.type == "cpu" else 128
+        grid = lambda META: (triton.cdiv(total_elements, META["BLOCK_SIZE"]),)
+        cat_kernel[grid](
+            in_ptr=t,
+            out_ptr=out,
+            in_strides_ptr=in_strides,
+            out_strides_ptr=out_strides,
+            shape_ptr=shape_tensor,
+            offset=offset,
+            total_elements=total_elements,
+            ndim=t.ndim,
+            BLOCK_SIZE=block_size,
         )
 
-        dim_offset = current_dim_offset
-        i += num_tensors_in_batch
+        offset += t.shape[dim] * out.stride()[dim]
 
     return out
