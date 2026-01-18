@@ -9,6 +9,8 @@ from .div import (
     true_divide_,
 )
 # from .mean import mean, mean_dim
+from .add import add, add_
+# from .mean import mean, mean_dim
 from .neg import neg, neg_
 from .rsqrt import rsqrt, rsqrt_
 
@@ -21,6 +23,8 @@ __all__ = [
     "floor_divide_",
     "remainder",
     "remainder_",
+    "add",
+    "add_",
     "mean",
     "mean_dim",
     "neg",
