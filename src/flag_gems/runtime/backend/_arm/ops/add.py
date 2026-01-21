@@ -300,8 +300,6 @@ def _add_tensor_tensor_3d_lastdim1024(x, y, alpha, out=None):
 
 def add(A, B, *, alpha=1):
     logging.debug("GEMS_ARM ADD")
-    if os.environ.get("GEMS_ARM_ADD_TRITON") != "1":
-        return _base_add(A, B, alpha=alpha)
     if isinstance(A, torch.Tensor) and not isinstance(B, torch.Tensor):
         if not _use_triton_scalar(A.numel()):
             return _base_add(A, B, alpha=alpha)
@@ -324,8 +322,6 @@ def add(A, B, *, alpha=1):
 
 def add_(A, B, *, alpha=1):
     logging.debug("GEMS_ARM ADD_")
-    if os.environ.get("GEMS_ARM_ADD_TRITON") != "1":
-        return _base_add_(A, B, alpha=alpha)
     if isinstance(A, torch.Tensor) and not isinstance(B, torch.Tensor):
         if not _use_triton_scalar(A.numel()):
             return _base_add_(A, B, alpha=alpha)
