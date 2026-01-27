@@ -279,6 +279,22 @@ def isin_by_native(in0, in1):
     return out
 
 
+def _isin_cpu_fallback(in0, in1, assume_unique: bool, invert: bool) -> torch.Tensor:
+    if not torch.is_tensor(in0):
+        in0 = torch.tensor(in0, device=in1.device)
+    if not torch.is_tensor(in1):
+        in1 = torch.tensor(in1, device=in0.device)
+    if in0.numel() == 0 or in1.numel() == 0:
+        return torch.zeros_like(in0, dtype=torch.bool)
+
+    import numpy as np
+
+    in0_np = in0.detach().cpu().numpy()
+    in1_np = in1.detach().cpu().numpy()
+    matches = np.isin(in0_np, in1_np, assume_unique=assume_unique, invert=invert)
+    return torch.from_numpy(matches).to(device=in0.device)
+
+
 def isin(
     in0,
     in1,
@@ -292,6 +308,10 @@ def isin(
     elif not torch.is_tensor(in1):
         assert torch.is_tensor(in0)
         in1 = torch.tensor(in1, device=in0.device)
+    if (torch.is_tensor(in0) and in0.device.type == "cpu") or (
+        torch.is_tensor(in1) and in1.device.type == "cpu"
+    ):
+        return _isin_cpu_fallback(in0, in1, assume_unique, invert)
     if in0.numel() == 0 or in1.numel() == 0:
         return torch.zeros_like(in0, dtype=torch.bool)
     if in0.numel() < 10 and in1.numel() == 1:
