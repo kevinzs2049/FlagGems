@@ -2,7 +2,6 @@ import pytest
 import torch
 
 import flag_gems
-flag_gems.device = 'cpu'
 
 from .performance_utils import GenericBenchmark, vendor_name
 

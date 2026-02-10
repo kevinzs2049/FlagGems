@@ -5,7 +5,6 @@ import pytest
 import torch
 
 import flag_gems
-flag_gems.device = 'cpu'
 
 from .attri_util import (
     COMPLEX_DTYPES,

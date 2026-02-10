@@ -105,16 +105,16 @@ prod:
   num_warps: 8
 max:
 - META:
-    BLOCK_M: 4
-    BLOCK_N: 1024
+    BLOCK_M: 8
+    BLOCK_N: 16
   num_warps: 4
 - META:
     BLOCK_M: 8
-    BLOCK_N: 1024
-  num_warps: 8
+    BLOCK_N: 8
+  num_warps: 4
 - META:
     BLOCK_M: 8
-    BLOCK_N: 1024
+    BLOCK_N: 4
   num_warps: 8
 addmm:
 - META:

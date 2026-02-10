@@ -7,8 +7,8 @@ import triton.language as tl
 
 from flag_gems.utils import libentry
 
-from ..runtime import device, torch_device_fn
-from ..utils import triton_lang_extension as tle
+from flag_gems.runtime import device, torch_device_fn
+from flag_gems.utils import triton_lang_extension as tle
 
 device = device.name
 

@@ -4,7 +4,7 @@ import torch
 import triton
 import triton.language as tl
 
-from ..utils import pointwise_dynamic
+from flag_gems.utils import pointwise_dynamic
 
 
 @pointwise_dynamic(promotion_methods=[(0, 1, "ALWAYS_BOOL")])

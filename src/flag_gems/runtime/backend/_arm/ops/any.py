@@ -7,7 +7,7 @@ import triton.language as tl
 
 from flag_gems import runtime
 from flag_gems.runtime import torch_device_fn
-from flag_gems.utils import dim_compress, libentry, libtuner
+from flag_gems.utils import dim_compress, libentry
 from flag_gems.utils import triton_lang_extension as tle
 
 logger = logging.getLogger(__name__)
@@ -23,10 +23,7 @@ def reduce_any(a, b):
 
 
 @libentry()
-@libtuner(
-    configs=runtime.get_tuned_config("naive_reduction"),
-    key=["M", "N"],
-)
+@triton.autotune(configs=runtime.get_tuned_config("any"), key=["M", "N"])
 @triton.jit
 def any_kernel_dim(
     inp,
@@ -120,8 +117,7 @@ def any_dim(inp, dim=None, keepdim=False):
         out = torch.empty(shape, dtype=torch.bool, device=inp.device)
 
         grid = lambda meta: (triton.cdiv(M, meta["BLOCK_M"]),)
-        with torch_device_fn.device(inp.device):
-            any_kernel_dim[grid](inp, out, M, N)
+        any_kernel_dim[grid](inp, out, M, N)
         if not keepdim:
             out = out.squeeze(dim=dim)
     return out
@@ -146,8 +142,7 @@ def any_dims(inp, dim=None, keepdim=False):
     out = torch.empty(shape, dtype=torch.bool, device=inp.device)
 
     grid = lambda meta: (triton.cdiv(M, meta["BLOCK_M"]),)
-    with torch_device_fn.device(inp.device):
-        any_kernel_dim[grid](inp, out, M, N)
+    any_kernel_dim[grid](inp, out, M, N)
     if not keepdim:
         out = out.squeeze(dim=dim)
     return out

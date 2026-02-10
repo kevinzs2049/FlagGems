@@ -5,8 +5,8 @@ import torch
 import triton
 import triton.language as tl
 
-from ..runtime import torch_device_fn
-from ..utils import libentry
+from flag_gems.runtime import torch_device_fn
+from flag_gems.utils import libentry
 from .topk import _get_finfo_val, _get_iinfo_val, argsort
 
 

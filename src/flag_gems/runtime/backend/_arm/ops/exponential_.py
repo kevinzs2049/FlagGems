@@ -9,8 +9,8 @@ from flag_gems.utils.random_utils import (
     uint_to_uniform_float,
 )
 
-from .. import runtime
-from ..runtime import torch_device_fn
+from flag_gems import runtime
+from flag_gems.runtime import torch_device_fn
 
 
 @triton.heuristics(runtime.get_heuristic_config("exponential_"))

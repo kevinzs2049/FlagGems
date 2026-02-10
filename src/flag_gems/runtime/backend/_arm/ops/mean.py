@@ -5,12 +5,12 @@ import torch
 import triton
 import triton.language as tl
 
-from .. import runtime
+from flag_gems import runtime
 
 # from ..utils import dim_compress, libentry
 # from ..runtime import torch_device_fn
-from ..utils import dim_compress
-from ..utils import triton_lang_extension as tle
+from flag_gems.utils import dim_compress
+from flag_gems.utils import triton_lang_extension as tle
 
 
 # @libentry()
@@ -87,14 +87,21 @@ def mean_dim_kernel(X, Mean, M, N, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr)
     tl.store(Mean, mean, row_mask)
 
 
-def mean_dim(x, dim, keepdim=False, *, dtype=None):
+def mean_dim(x, dim=None, keepdim=False, *, dtype=None):
     logging.debug("GEMS MEAN DIM")
 
     if dtype is None:
         dtype = x.dtype
     if dim is None:
         out = mean(x, dtype=dtype)
-        if not keepdim:
+        if keepdim:
+            out = out.reshape([1] * x.ndim)
+        return out
+    elif isinstance(dim, int):
+        dim = (dim,)
+    elif dim == []:
+        out = mean(x, dtype=dtype)
+        if keepdim:
             out = out.reshape([1] * x.ndim)
         return out
 

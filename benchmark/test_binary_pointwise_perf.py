@@ -4,7 +4,6 @@ import pytest
 import torch
 
 import flag_gems
-flag_gems.device = 'cpu'
 
 from .attri_util import BOOL_DTYPES, DEFAULT_METRICS, FLOAT_DTYPES, INT_DTYPES
 from .performance_utils import Benchmark, generate_tensor_input

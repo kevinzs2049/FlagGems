@@ -6,7 +6,7 @@ import triton.language as tl
 
 from flag_gems.runtime import torch_device_fn
 
-from .. import runtime
+from flag_gems import runtime
 
 
 # Modified from Triton tutorial: https://triton-lang.org/main/getting-started/tutorials/06-fused-attention.html

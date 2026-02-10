@@ -6,11 +6,11 @@ import torch
 import triton
 import triton.language as tl
 
-from .. import runtime
+from flag_gems import runtime
 
 # from ..runtime import torch_device_fn
 # from ..utils import libentry
-from ..utils import triton_lang_extension as tle
+from flag_gems.utils import triton_lang_extension as tle
 
 
 # @libentry()

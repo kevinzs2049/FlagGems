@@ -2,7 +2,6 @@ import pytest
 import torch
 
 import flag_gems
-flag_gems.device = 'cpu'
 
 from .attri_util import FLOAT_DTYPES
 from .performance_utils import (

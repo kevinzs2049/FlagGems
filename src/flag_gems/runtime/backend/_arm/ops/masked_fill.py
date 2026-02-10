@@ -5,8 +5,8 @@ import triton
 import triton.language as tl
 
 # from .. import runtime
-from ..utils import broadcastable_to  # , libentry
-from ..utils import triton_lang_extension as tle
+from flag_gems.utils import broadcastable_to  # , libentry
+from flag_gems.utils import triton_lang_extension as tle
 
 
 # @libentry()
