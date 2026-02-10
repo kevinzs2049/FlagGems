@@ -1,6 +1,7 @@
 import logging
 import math
 
+import numpy as np
 import torch
 import triton
 import triton.language as tl
@@ -268,10 +269,34 @@ def topk_stage2_kernel(
 
 def topk(x, k, dim=-1, largest=True, sorted=True):
     logger.debug("GEMS TOPK")
-    # If dim equals to last dim, we set it to -1.
     if dim < 0:
         dim = dim + x.ndim
 
+    if x.device.type == "cpu":
+        # CPU Triton topk kernel is unstable for some shapes/dtypes. Use a
+        # deterministic host fallback for correctness.
+        x_np = x.detach().cpu().to(torch.float32).numpy()
+        if largest:
+            part = np.argpartition(x_np, x_np.shape[dim] - k, axis=dim)
+            idx = np.take(part, indices=range(x_np.shape[dim] - k, x_np.shape[dim]), axis=dim)
+            vals = np.take_along_axis(x_np, idx, axis=dim)
+            if sorted:
+                order = np.flip(np.argsort(vals, axis=dim), axis=dim)
+                idx = np.take_along_axis(idx, order, axis=dim)
+                vals = np.take_along_axis(vals, order, axis=dim)
+        else:
+            part = np.argpartition(x_np, k - 1, axis=dim)
+            idx = np.take(part, indices=range(k), axis=dim)
+            vals = np.take_along_axis(x_np, idx, axis=dim)
+            if sorted:
+                order = np.argsort(vals, axis=dim)
+                idx = np.take_along_axis(idx, order, axis=dim)
+                vals = np.take_along_axis(vals, order, axis=dim)
+        vals_t = torch.from_numpy(vals).to(device=x.device, dtype=x.dtype)
+        idx_t = torch.from_numpy(idx.astype(np.int64, copy=False)).to(device=x.device)
+        return vals_t, idx_t
+
+    # If dim equals to last dim, we set it to -1.
     assert dim == x.ndim - 1, "Currently only support topk in last dimension"
     # assert sorted, "Currently only support sorted == True"
 

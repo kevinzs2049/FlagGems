@@ -162,4 +162,6 @@ class LogSoftmax(torch.autograd.Function):
 
 
 def log_softmax(x, dim=-1, dtype=None):
+    if isinstance(dtype, bool):
+        dtype = torch.float32 if dtype else None
     return LogSoftmax.apply(x, dim, dtype)

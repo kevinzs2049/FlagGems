@@ -33,11 +33,6 @@ def ones(size, *, dtype=None, layout=None, device=None, pin_memory=None):
         dtype = torch.get_default_dtype()
     if device is None:
         device = torch.device(device_.name)
-
     out = torch.empty(size, device=device, dtype=dtype)
-    N = volume(size)
-    BLOCK_SIZE = 8
-    grid = (triton.cdiv(N, BLOCK_SIZE),)
-    # with torch_device_fn.device(device):
-    ones_kernel[grid](out, N, BLOCK_SIZE)
+    out[...] = 1
     return out

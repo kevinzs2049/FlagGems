@@ -1,10 +1,6 @@
 import logging
 
 import torch
-import triton
-
-from flag_gems.ops.ones import ones_kernel
-from flag_gems.runtime import torch_device_fn
 
 logger = logging.getLogger(__name__)
 
@@ -18,8 +14,5 @@ def ones_like(
     if dtype is None:
         dtype = x.dtype
     out = torch.empty_like(x, device=device, dtype=dtype)
-    N = x.numel()
-    grid_fn = lambda meta: (triton.cdiv(N, meta["BLOCK_SIZE"]),)
-    # with torch_device_fn.device(x.device):
-    ones_kernel[grid_fn](out, N, BLOCK_SIZE=8)
+    out[...] = 1
     return out

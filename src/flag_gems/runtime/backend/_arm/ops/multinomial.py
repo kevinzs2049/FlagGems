@@ -1,5 +1,6 @@
 import logging
 
+import numpy as np
 import torch
 import triton
 import triton.language as tl
@@ -74,20 +75,21 @@ def multinomial(prob, n_samples, with_replacement=False, *, gen=None):
             vals, indices = torch.topk(s, n_samples, dim=-1)
             return indices.to(torch.int64)
 
-    cum_prob = normed_cumsum(prob, dim=-1)
+    prob_np = prob.detach().cpu().to(torch.float64).numpy()
+    if prob_np.ndim == 1:
+        positive = prob_np > 0
+        choices = np.flatnonzero(positive)
+        weights = prob_np[positive]
+        probs = weights / weights.sum()
+        out_np = np.random.choice(choices, size=n_samples, replace=True, p=probs)
+        return torch.from_numpy(out_np.astype(np.int64, copy=False)).to(device=prob.device)
 
-    if cum_prob.dim() == 1:
-        n_dist = 1
-        out = torch.empty((n_samples,), device=prob.device, dtype=torch.int64)
-    else:
-        n_dist = cum_prob.size(0)
-        out = torch.empty((n_dist, n_samples), device=prob.device, dtype=torch.int64)
-    # The CTA level parallelism is framed in a 2d grid of blocks with grid.y
-    # indexing into distributions and grid.x output sample batches
-    increment = n_dist * n_samples
-    philox_seed, philox_offset = philox_backend_seed_offset(increment, generator=gen)
-    grid = lambda META: (triton.cdiv(n_samples, META["NBLOCK"]), n_dist)
-    multinomial_with_replacement[grid](
-        cum_prob, out, n_categories, n_samples, philox_seed, philox_offset
-    )
-    return out
+    out_np = np.empty((prob_np.shape[0], n_samples), dtype=np.int64)
+    for i in range(prob_np.shape[0]):
+        row = prob_np[i]
+        positive = row > 0
+        choices = np.flatnonzero(positive)
+        weights = row[positive]
+        probs = weights / weights.sum()
+        out_np[i] = np.random.choice(choices, size=n_samples, replace=True, p=probs)
+    return torch.from_numpy(out_np).to(device=prob.device)

@@ -329,6 +329,11 @@ _scatter_func = ScatterFunction()
 
 def scatter(inp, dim, index, src, reduce=None):
     logger.debug("GEMS SCATTER")
+    if reduce == "multiply":
+        return torch.scatter_reduce(
+            inp, dim, index, src, reduce="prod", include_self=True
+        )
+
     out = inp.clone()
 
     if reduce is not None:
@@ -364,6 +369,12 @@ def scatter(inp, dim, index, src, reduce=None):
 
 def scatter_(inp, dim, index, src, reduce=None):
     logger.debug("GEMS SCATTER_")
+    if reduce == "multiply":
+        inp.copy_(
+            torch.scatter_reduce(inp, dim, index, src, reduce="prod", include_self=True)
+        )
+        return inp
+
     out = inp
 
     if reduce is not None:

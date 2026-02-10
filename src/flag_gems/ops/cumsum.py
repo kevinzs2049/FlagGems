@@ -17,7 +17,10 @@ logger = logging.getLogger(__name__)
 
 @functools.lru_cache
 def get_num_sms(idx: int) -> int:
-    return get_device_properties(idx).multi_processor_count
+    props = get_device_properties(idx)
+    if isinstance(props, dict):
+        return int(props.get("multi_processor_count", 1))
+    return props.multi_processor_count
 
 
 @tl.constexpr
@@ -534,7 +537,11 @@ def normed_cumsum(inp, dim=-1):
     out = torch.empty_like(inp)
     with torch_device_fn.device(inp.device.index):
         # Pass one, scan a (batch, n_tiles * TILE) sized block within each cta
-        num_sms = get_device_properties(device).multi_processor_count
+        props = get_device_properties(device)
+        if isinstance(props, dict):
+            num_sms = int(props.get("multi_processor_count", 1))
+        else:
+            num_sms = props.multi_processor_count
         TILE = 2048
         # Each row is split into n_chunks of chunks where each chunk is compised of
         # n_tiles of tiles. Different chunks are assigned to different ctas.

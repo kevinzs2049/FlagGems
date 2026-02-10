@@ -52,29 +52,38 @@ def cat(
     if len(A) == 1:
         return A[0]
 
-    dim = dim % A[0].ndim
-    base_shape = A[0].shape
+    # Match PyTorch behavior: allow 1D empty tensors to participate in cat.
+    normal_tensors = [t for t in A if not (t.ndim == 1 and t.numel() == 0)]
+    if len(normal_tensors) == 0:
+        return torch.empty((0,), dtype=A[0].dtype, device=A[0].device)
 
-    for t in A:
+    dim = dim % normal_tensors[0].ndim
+    base_shape = normal_tensors[0].shape
+
+    for t in normal_tensors:
         if t.ndim != len(base_shape):
             raise RuntimeError("Tensors must have the same number of dimensions")
         for i in range(t.ndim):
             if i != dim and t.shape[i] != base_shape[i]:
                 raise RuntimeError(f"Size mismatch at dim {i}")
 
-    if all(t.numel() == 0 for t in A):
+    if all(t.numel() == 0 for t in normal_tensors):
         empty_shape = list(base_shape)
         empty_shape[dim] = 0
-        return torch.empty(empty_shape, dtype=A[0].dtype, device=A[0].device)
+        return torch.empty(
+            empty_shape, dtype=normal_tensors[0].dtype, device=normal_tensors[0].device
+        )
 
     out_shape = list(base_shape)
-    out_shape[dim] = sum(t.shape[dim] for t in A)
-    out = torch.empty(out_shape, dtype=A[0].dtype, device=A[0].device)
+    out_shape[dim] = sum(t.shape[dim] for t in normal_tensors)
+    out = torch.empty(
+        out_shape, dtype=normal_tensors[0].dtype, device=normal_tensors[0].device
+    )
 
     out_strides = torch.tensor(out.stride(), dtype=torch.int32, device=out.device)
     offset = 0
 
-    for t in A:
+    for t in normal_tensors:
         if t.numel() == 0:
             continue
 

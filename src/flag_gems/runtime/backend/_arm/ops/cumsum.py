@@ -204,7 +204,14 @@ def cumsum(inp, dim=1, *, dtype=None):
 
     if dtype is None:
         dtype = inp.dtype
-        if dtype is torch.bool:
+        if dtype in (
+            torch.bool,
+            torch.int8,
+            torch.uint8,
+            torch.int16,
+            torch.int32,
+            torch.int64,
+        ):
             dtype = torch.int64
     out = torch.empty_like(inp, dtype=dtype)
 
@@ -378,7 +385,11 @@ def normed_cumsum(inp, dim=-1):
     out = torch.empty_like(inp)
     # with torch_device_fn.device(inp.device.index):
     # Pass one, scan a (batch, n_tiles * TILE) sized block within each cta
-    num_sms = torch_device_fn.get_device_properties(device).multi_processor_count
+    device_props = torch_device_fn.get_device_properties(device)
+    if isinstance(device_props, dict):
+        num_sms = int(device_props.get("multi_processor_count", 1))
+    else:
+        num_sms = device_props.multi_processor_count
     TILE = 2048
     # Each row is split into n_chunks of chunks where each chunk is compised of
     # n_tiles of tiles. Different chunks are assigned to different ctas.
@@ -415,62 +426,63 @@ def normed_cumsum(inp, dim=-1):
         )
         return out
 
-        if inp.dtype != torch.float64:
-            acc_dtype = torch.float32
-        sums = torch.empty((n_rows, n_chunks), dtype=acc_dtype, device=device.name)
-        cumsums = torch.empty_like(sums)
-        block_cumsum_kernel[grid](
-            inp,
-            out,
-            sums,
-            batch,
-            n_tiles,
-            n_rows,
-            K,
-            r_stride,
-            k_stride,
-            r_stride,
-            k_stride,
-            OUTPUT_SUMS=True,
-            NORMALIZE=False,
-            HAS_OUT_LAYOUT=False,
-            TILE=TILE,
-        )
-        # Pass two, scan partial cumsums
-        block_cumsum_kernel[(1, n_batch)](
-            sums,
-            cumsums,
-            0,
-            batch,
-            1,
-            n_rows,
-            n_chunks,
-            n_chunks,
-            1,
-            n_chunks,
-            1,
-            OUTPUT_SUMS=False,
-            NORMALIZE=False,
-            HAS_OUT_LAYOUT=True,
-            TILE=TILE,
-        )
-        # print(sums)
-        rscale = cumsums[..., -1]
-        block_update_kernel[grid](
-            out,
-            cumsums - sums,
-            rscale,
-            out,
-            batch,
-            n_tiles,
-            n_rows,
-            K,
-            r_stride,
-            k_stride,
-            r_stride,
-            k_stride,
-            n_chunks,
-            HAS_OUT_LAYOUT=False,
-            TILE=TILE,
-        )
-        return out
+    if inp.dtype != torch.float64:
+        acc_dtype = torch.float32
+    else:
+        acc_dtype = torch.float64
+    sums = torch.empty((n_rows, n_chunks), dtype=acc_dtype, device=inp.device)
+    cumsums = torch.empty_like(sums)
+    block_cumsum_kernel[grid](
+        inp,
+        out,
+        sums,
+        batch,
+        n_tiles,
+        n_rows,
+        K,
+        r_stride,
+        k_stride,
+        r_stride,
+        k_stride,
+        OUTPUT_SUMS=True,
+        NORMALIZE=False,
+        HAS_OUT_LAYOUT=False,
+        TILE=TILE,
+    )
+    # Pass two, scan partial cumsums
+    block_cumsum_kernel[(1, n_batch)](
+        sums,
+        cumsums,
+        0,
+        batch,
+        1,
+        n_rows,
+        n_chunks,
+        n_chunks,
+        1,
+        n_chunks,
+        1,
+        OUTPUT_SUMS=False,
+        NORMALIZE=False,
+        HAS_OUT_LAYOUT=True,
+        TILE=TILE,
+    )
+    rscale = cumsums[..., -1]
+    block_update_kernel[grid](
+        out,
+        cumsums - sums,
+        rscale,
+        out,
+        batch,
+        n_tiles,
+        n_rows,
+        K,
+        r_stride,
+        k_stride,
+        r_stride,
+        k_stride,
+        n_chunks,
+        HAS_OUT_LAYOUT=False,
+        TILE=TILE,
+    )
+    return out

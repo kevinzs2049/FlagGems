@@ -358,4 +358,6 @@ class Softmax(torch.autograd.Function):
 
 
 def softmax(x, dim=-1, dtype=None):
+    if isinstance(dtype, bool):
+        dtype = torch.float32 if dtype else None
     return Softmax.apply(x, dim, dtype)
