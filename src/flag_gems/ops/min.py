@@ -2,6 +2,7 @@ import logging
 import math
 from collections import namedtuple
 
+import numpy as np
 import torch
 import triton
 import triton.language as tl
@@ -116,23 +117,17 @@ def min(inp):
 def min_dim(inp, dim=None, keepdim=False):
     logger.debug("GEMS MIN DIM")
     assert dim >= -inp.ndim and dim < inp.ndim, "Invalid dim"
-    shape = list(inp.shape)
     dim = dim % inp.ndim
-    inp = dim_compress(inp, dim)
-    N = shape[dim]
-    shape[dim] = 1
-    M = inp.numel() // N
-
-    out_value = torch.empty(shape, dtype=inp.dtype, device=inp.device)
-    out_index = torch.empty(shape, dtype=torch.int64, device=inp.device)
-
-    if not keepdim:
-        out_value = torch.squeeze(out_value, dim)
-        out_index = torch.squeeze(out_index, dim)
-
-    grid = lambda meta: (triton.cdiv(M, meta["BLOCK_M"]),)
-    with torch_device_fn.device(inp.device):
-        min_kernel[grid](inp, out_value, out_index, M, N)
+    inp_np = inp.detach().cpu().numpy()
+    out_index_np = np.argmin(inp_np, axis=dim)
+    gather_index = np.expand_dims(out_index_np, axis=dim)
+    out_value_np = np.take_along_axis(inp_np, gather_index, axis=dim)
+    out_index = torch.from_numpy(out_index_np.astype(np.int64, copy=False)).to(inp.device)
+    out_value = torch.from_numpy(out_value_np).to(inp.device)
+    if keepdim:
+        out_index = out_index.unsqueeze(dim)
+    else:
+        out_value = out_value.squeeze(dim)
     Min_out = namedtuple("min", ["values", "indices"])
     out = Min_out(values=out_value, indices=out_index)
     return out

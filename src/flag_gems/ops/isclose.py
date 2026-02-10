@@ -5,13 +5,7 @@ import triton
 import triton.language as tl
 
 from flag_gems.ops.all import all
-from flag_gems.utils import pointwise_dynamic, tl_extra_shim
-
-try:
-    _isfinited = tl_extra_shim.isfinited
-    _finitef = tl_extra_shim.finitef
-except Exception:
-    pass
+from flag_gems.utils import pointwise_dynamic
 logger = logging.getLogger(__name__)
 
 
@@ -39,7 +33,9 @@ def isclose_func(
     if not zero_tol:
         allowed = atol + tl.abs(rtol * cast_y)
         actual = tl.abs(cast_x - cast_y)
-        actual_finite = _isfinited(actual) if x.dtype.is_fp64() else _finitef(actual)
+        actual_finite = (actual == actual) & (actual != float("inf")) & (
+            actual != -float("inf")
+        )
         close |= actual_finite.to(tl.int1) & (actual <= allowed)
     return close
 

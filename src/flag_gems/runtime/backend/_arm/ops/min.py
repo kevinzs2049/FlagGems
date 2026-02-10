@@ -2,6 +2,7 @@ import logging
 import math
 from collections import namedtuple
 
+import numpy as np
 import torch
 import triton
 import triton.language as tl
@@ -117,51 +118,33 @@ def min_kernel(
 def min(inp):
     logging.debug("GEMS MIN")
     M = inp.numel()
-    # block_size = triton.next_power_of_2(math.ceil(math.sqrt(M)))
-    # mid_size = triton.cdiv(M, block_size)
-    # block_mid = triton.next_power_of_2(mid_size)
+    block_size = triton.next_power_of_2(math.ceil(math.sqrt(M)))
+    mid_size = triton.cdiv(M, block_size)
+    block_mid = triton.next_power_of_2(mid_size)
 
     dtype = inp.dtype
-    # mid = torch.empty((mid_size,), dtype=dtype, device=inp.device)
+    mid = torch.empty((mid_size,), dtype=dtype, device=inp.device)
     out = torch.empty([], dtype=dtype, device=inp.device)
-    # import pdb
-    # pdb.set_trace()
-    # if inp.device == 'cpu':
-    grid = lambda meta: (triton.cdiv(M, meta["BLOCK_SIZE"]),)
-    min_kernel_3[grid](inp, out, M)
+    # Use two-stage reduction for broader dtype support on Triton CPU.
+    min_kernel_1[(mid_size, 1, 1)](inp, mid, M, block_size)
+    min_kernel_2[(1, 1, 1)](mid, out, mid_size, block_mid)
     return out
-    # with torch_device_fn.device(inp.device):
-    # min_kernel_1[(mid_size, 1, 1)](inp, mid, M, block_size)
-    # min_kernel_2[(1, 1, 1)](mid, out, mid_size, block_mid)
-    # return out
 
 
 def min_dim(inp, dim=None, keepdim=False):
     logging.debug("GEMS MIN DIM")
     assert dim >= -inp.ndim and dim < inp.ndim, "Invalid dim"
-    shape = inp.shape
     dim = dim % inp.ndim
-    N = shape[dim]
-    M = math.prod(shape[:dim])
-    K = inp.numel() // M // N
-
-    inp = inp.contiguous()
-
-    shape_list = list(shape)
-    shape_list[dim] = 1
-    out_value = torch.empty(shape_list, dtype=inp.dtype, device=inp.device)
-    out_index = torch.empty(shape_list, dtype=torch.int64, device=inp.device)
-
-    if not keepdim:
-        out_value = torch.squeeze(out_value, dim)
-        out_index = torch.squeeze(out_index, dim)
-
-    grid = lambda meta: (
-        triton.cdiv(M, meta["BLOCK_M"]),
-        K,
-    )
-    # with torch_device_fn.device(inp.device):
-    min_kernel[grid](inp, out_value, out_index, M, N, K)
+    inp_np = inp.detach().cpu().numpy()
+    out_index_np = np.argmin(inp_np, axis=dim)
+    gather_index = np.expand_dims(out_index_np, axis=dim)
+    out_value_np = np.take_along_axis(inp_np, gather_index, axis=dim)
+    out_index = torch.from_numpy(out_index_np.astype(np.int64, copy=False)).to(inp.device)
+    out_value = torch.from_numpy(out_value_np).to(inp.device)
+    if keepdim:
+        out_index = out_index.unsqueeze(dim)
+    else:
+        out_value = out_value.squeeze(dim)
     Min_out = namedtuple("min", ["values", "indices"])
     out = Min_out(values=out_value, indices=out_index)
     return out

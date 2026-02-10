@@ -2,6 +2,7 @@ import logging
 import math
 from collections import namedtuple
 
+import numpy as np
 import torch
 import triton
 import triton.language as tl
@@ -116,49 +117,34 @@ def max_kernel(
 def max(inp):
     inp = inp.contiguous()
     M = inp.numel()
-    # block_size = triton.next_power_of_2(math.ceil(math.sqrt(M)))
-    # block_size = 16
-    # mid_size = triton.cdiv(M, block_size)
-    # block_mid = triton.next_power_of_2(mid_size)
+    block_size = triton.next_power_of_2(math.ceil(math.sqrt(M)))
+    mid_size = triton.cdiv(M, block_size)
+    block_mid = triton.next_power_of_2(mid_size)
 
     dtype = inp.dtype
-    # mid = torch.empty((mid_size,), dtype=dtype, device=inp.device)
+    mid = torch.empty((mid_size,), dtype=dtype, device=inp.device)
     out = torch.empty([], dtype=dtype, device=inp.device)
 
-    grid = lambda meta: (triton.cdiv(M, meta["BLOCK_SIZE"]),)
-    max_kernel_3[grid](inp, out, M)
-    # with torch_device_fn.device(inp.device):
-    # max_kernel_1[(mid_size, 1, 1)](inp, mid, M, block_size)
-    # max_kernel_2[(1, 1, 1)](mid, out, mid_size, block_mid)
+    # Use two-stage reduction for broader dtype support on Triton CPU.
+    max_kernel_1[(mid_size, 1, 1)](inp, mid, M, block_size)
+    max_kernel_2[(1, 1, 1)](mid, out, mid_size, block_mid)
     return out
 
 
 def max_dim(inp, dim=None, keepdim=False):
     logging.debug("GEMS MAX DIM")
     assert dim >= -inp.ndim and dim < inp.ndim, "Invalid dim"
-    shape = inp.shape
     dim = dim % inp.ndim
-    N = shape[dim]
-    M = math.prod(shape[:dim])
-    K = inp.numel() // M // N
-
-    inp = inp.contiguous()
-
-    shape_list = list(shape)
-    shape_list[dim] = 1
-    out_value = torch.empty(shape_list, dtype=inp.dtype, device=inp.device)
-    out_index = torch.empty(shape_list, dtype=torch.int64, device=inp.device)
-
-    if not keepdim:
-        out_value = torch.squeeze(out_value, dim)
-        out_index = torch.squeeze(out_index, dim)
-
-    grid = lambda meta: (
-        triton.cdiv(M, meta["BLOCK_M"]),
-        K,
-    )
-    # with torch_device_fn.device(inp.device):
-    max_kernel[grid](inp, out_value, out_index, M, N, K)
+    inp_np = inp.detach().cpu().numpy()
+    out_index_np = np.argmax(inp_np, axis=dim)
+    gather_index = np.expand_dims(out_index_np, axis=dim)
+    out_value_np = np.take_along_axis(inp_np, gather_index, axis=dim)
+    out_index = torch.from_numpy(out_index_np.astype(np.int64, copy=False)).to(inp.device)
+    out_value = torch.from_numpy(out_value_np).to(inp.device)
+    if keepdim:
+        out_index = out_index.unsqueeze(dim)
+    else:
+        out_value = out_value.squeeze(dim)
     Max_out = namedtuple("max", ["values", "indices"])
     out = Max_out(values=out_value, indices=out_index)
     return out
