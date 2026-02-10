@@ -1,5 +1,6 @@
 import logging
 
+import numpy as np
 import torch
 import triton
 import triton.language as tl
@@ -98,6 +99,15 @@ def log_softmax_backward_kernel(
 def log_softmax(self, dim, half_to_float=False):
     logger.debug("GEMS LOG_SOFTMAX")
 
+    if self.device.type == "cpu":
+        dim = dim % self.ndim
+        out_dtype = torch.float32 if half_to_float else self.dtype
+        inp = self.to(torch.float32)
+        inp_np = inp.detach().cpu().numpy()
+        shifted = inp_np - np.max(inp_np, axis=dim, keepdims=True)
+        out_np = shifted - np.log(np.sum(np.exp(shifted), axis=dim, keepdims=True))
+        return torch.from_numpy(out_np).to(device=self.device, dtype=out_dtype)
+
     assert dim >= -self.ndim and dim < self.ndim, "Invalid dim"
     dim = dim % self.ndim
     M = 1
@@ -130,6 +140,14 @@ def log_softmax(self, dim, half_to_float=False):
 
 def log_softmax_backward(grad_output, output, dim, input_dtype):
     logger.debug("GEMS LOG_SOFTMAX VJP")
+
+    if output.device.type == "cpu":
+        dim = dim % output.ndim
+        grad_np = grad_output.detach().cpu().to(torch.float32).numpy()
+        out_np = output.detach().cpu().to(torch.float32).numpy()
+        scale = np.sum(grad_np, axis=dim, keepdims=True)
+        in_grad_np = grad_np - np.exp(out_np) * scale
+        return torch.from_numpy(in_grad_np).to(device=output.device, dtype=input_dtype)
 
     assert dim >= -output.ndim and dim < output.ndim, "Invalid dim"
     dim = dim % output.ndim

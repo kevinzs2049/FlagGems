@@ -1,5 +1,6 @@
 import logging
 
+import numpy as np
 import torch
 import triton
 import triton.language as tl
@@ -164,4 +165,11 @@ class LogSoftmax(torch.autograd.Function):
 def log_softmax(x, dim=-1, dtype=None):
     if isinstance(dtype, bool):
         dtype = torch.float32 if dtype else None
+    if x.device.type == "cpu":
+        dim = dim % x.ndim
+        out_dtype = x.dtype if dtype is None else dtype
+        inp_np = x.detach().cpu().to(torch.float32).numpy()
+        shifted = inp_np - np.max(inp_np, axis=dim, keepdims=True)
+        out_np = shifted - np.log(np.sum(np.exp(shifted), axis=dim, keepdims=True))
+        return torch.from_numpy(out_np).to(device=x.device, dtype=out_dtype)
     return LogSoftmax.apply(x, dim, dtype)

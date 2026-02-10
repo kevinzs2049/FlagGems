@@ -82,5 +82,14 @@ class Gelu(torch.autograd.Function):
 
 
 def gelu(A, *, approximate="none"):
-    print("\n.......test for mutibackend specific gelu........\n")
+    if A.device.type == "cpu":
+        # Keep CPU path numerically stable for low-precision dtypes.
+        inp = A.to(torch.float32) if A.dtype in (torch.float16, torch.bfloat16) else A
+        if approximate == "tanh":
+            out = 0.5 * inp * (
+                1.0 + torch.tanh(0.7978845608 * (inp + 0.044715 * inp * inp * inp))
+            )
+        else:
+            out = 0.5 * inp * (1.0 + torch.erf(inp * 0.7071067811865476))
+        return out.to(A.dtype)
     return Gelu.apply(A, approximate)
