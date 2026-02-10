@@ -2,25 +2,14 @@ attention:
 - gen: true
   param_map:
     META:
-      BLOCK_M: block_m
-      BLOCK_N: block_n
+      BLOCK_M: 4
+      BLOCK_N: 4
       PRE_LOAD_V: pre_load_v
-    num_warps: warps
-    num_stages: stages
-  block_m:
-  - 16
-  block_n:
-  - 8
+    num_warps: 4
+    num_stages: 4
   pre_load_v:
   - true
   - false
-  warps:
-  - 4
-  - 8
-  stages:
-  - 1
-  - 2
-  - 3
 bmm:
 - META:
     TILE_M: 4
@@ -59,12 +48,14 @@ mm:
     BLOCK_M: 4
     BLOCK_N: 4
     BLOCK_K: 4
+    SPLIT_K: 1
   num_stages: 4
   num_warps: 4
 - META:
     BLOCK_M: 8
     BLOCK_N: 8
     BLOCK_K: 8
+    SPLIT_K: 1
   num_stages: 4
   num_warps: 4
 softmax_non_inner:
@@ -89,15 +80,15 @@ test_libentry:
 min:
 - META:
     BLOCK_M: 8
-    BLOCK_N: 1024
+    BLOCK_N: 16
   num_warps: 4
 - META:
     BLOCK_M: 8
-    BLOCK_N: 1024
+    BLOCK_N: 8
   num_warps: 4
 - META:
     BLOCK_M: 8
-    BLOCK_N: 1024
+    BLOCK_N: 4
   num_warps: 8
 prod:
 - META:
@@ -295,14 +286,9 @@ mean:
 - gen: true
   param_map:
     META:
-      BLOCK_M: block_m
-      BLOCK_N: 1024
+      BLOCK_M: 1
+      BLOCK_N: 64
     num_warps: 4
-  block_m:
-  - 1
-  - 2
-  - 4
-  - 8
 
 instancenorm:
 - gen: true
@@ -488,17 +474,7 @@ select_scatter_inner:
   num_warps: 4
 softmax:
 - META:
-    TILE_K: 4
-- META:
-    TILE_K: 4
-- META:
-    TILE_K: 128
-- META:
-    TILE_K: 256
-- META:
-    TILE_K: 512
-- META:
-    TILE_K: 1024
+    TILE_K: 64
 vstack:
 - gen: true
   param_map:
@@ -540,6 +516,7 @@ scatter:
       BLOCK_N: block_n
     num_warps: 4
   block_m:
+  - 1
   - 2
   - 4
   block_n:
@@ -547,6 +524,7 @@ scatter:
   - 8
   - 16
   - 32
+  - 64
 sum:
 - gen: true
   param_map:
