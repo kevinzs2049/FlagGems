@@ -66,6 +66,19 @@ def to_copy(
     non_blocking=False,
     memory_format=None,
 ):
+    if not isinstance(x, torch.Tensor):
+        if layout is not None and layout != torch.strided:
+            raise NotImplementedError(
+                "FlagGems to_copy currently supports strided tensors only."
+            )
+        if pin_memory is not None:
+            raise NotImplementedError(
+                "FlagGems to_copy does not yet support pin_memory=True."
+            )
+        scalar_dtype = dtype if isinstance(dtype, torch.dtype) else None
+        scalar_device = torch.device(device) if device is not None else None
+        return torch.as_tensor(x, dtype=scalar_dtype, device=scalar_device)
+
     # We only implement the dense strided kernel today; all other layouts fall back to PyTorch.
     if (layout is not None and layout != torch.strided) or x.layout != torch.strided:
         raise NotImplementedError(
