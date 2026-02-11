@@ -111,3 +111,46 @@ def addmm(bias, mat1, mat2, *, beta=1, alpha=1):
         out.stride(1),
     )
     return out
+
+
+def addmm_out(bias, mat1, mat2, *, beta=1, alpha=1, out=None):
+    logging.debug("GEMS ADDMM_OUT")
+    assert mat1.shape[1] == mat2.shape[0], "Incompatible dimensions"
+    M, K = mat1.shape
+    _, N = mat2.shape
+
+    if out is None:
+        out = torch.empty((M, N), device=mat1.device, dtype=mat1.dtype)
+    else:
+        assert out.shape == (M, N), "Incompatible output shape"
+
+    assert broadcastable_to(bias.shape, out.shape), "Incompatible input shape"
+
+    mat1 = mat1.contiguous()
+    mat2 = mat2.contiguous()
+    bias = bias.broadcast_to(out.shape)
+
+    grid = lambda META: (
+        triton.cdiv(M, META["BLOCK_SIZE_M"]),
+        triton.cdiv(N, META["BLOCK_SIZE_N"]),
+    )
+    addmm_kernel[grid](
+        mat1,
+        mat2,
+        bias,
+        out,
+        alpha,
+        beta,
+        M,
+        N,
+        K,
+        mat1.stride(0),
+        mat1.stride(1),
+        mat2.stride(0),
+        mat2.stride(1),
+        bias.stride(0),
+        bias.stride(1),
+        out.stride(0),
+        out.stride(1),
+    )
+    return out

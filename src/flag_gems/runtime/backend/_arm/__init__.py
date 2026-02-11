@@ -7,8 +7,6 @@ vendor_info = VendorInfoBase(
 # Keep high-traffic CPU primitives on native PyTorch kernels for better end-to-end
 # generation throughput on Triton-CPU deployments.
 CUSTOMIZED_UNUSED_OPS = (
-    "addmm",
-    "addmm_out",
     "all",
     "all_dim",
     "all_dims",
@@ -42,8 +40,6 @@ CUSTOMIZED_UNUSED_OPS = (
     "isin",
     "lt",
     "lt_scalar",
-    "mm",
-    "mm_out",
     "mul",
     "mul_",
     "masked_fill",

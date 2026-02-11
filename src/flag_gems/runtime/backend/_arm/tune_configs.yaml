@@ -58,6 +58,34 @@ mm:
     SPLIT_K: 1
   num_stages: 4
   num_warps: 4
+- META:
+    BLOCK_M: 4
+    BLOCK_N: 16
+    BLOCK_K: 8
+    SPLIT_K: 1
+  num_stages: 4
+  num_warps: 4
+- META:
+    BLOCK_M: 8
+    BLOCK_N: 16
+    BLOCK_K: 8
+    SPLIT_K: 1
+  num_stages: 4
+  num_warps: 4
+- META:
+    BLOCK_M: 16
+    BLOCK_N: 16
+    BLOCK_K: 8
+    SPLIT_K: 1
+  num_stages: 4
+  num_warps: 4
+- META:
+    BLOCK_M: 8
+    BLOCK_N: 32
+    BLOCK_K: 8
+    SPLIT_K: 1
+  num_stages: 4
+  num_warps: 4
 softmax_non_inner:
 - META:
     TILE_K: 4
@@ -120,6 +148,24 @@ addmm:
 - META:
     BLOCK_SIZE_M: 8
     BLOCK_SIZE_N: 8
+    BLOCK_SIZE_K: 8
+  num_stages: 4
+  num_warps: 4
+- META:
+    BLOCK_SIZE_M: 4
+    BLOCK_SIZE_N: 16
+    BLOCK_SIZE_K: 8
+  num_stages: 4
+  num_warps: 4
+- META:
+    BLOCK_SIZE_M: 8
+    BLOCK_SIZE_N: 16
+    BLOCK_SIZE_K: 8
+  num_stages: 4
+  num_warps: 4
+- META:
+    BLOCK_SIZE_M: 16
+    BLOCK_SIZE_N: 16
     BLOCK_SIZE_K: 8
   num_stages: 4
   num_warps: 4

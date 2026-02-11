@@ -1,5 +1,5 @@
 from .add import add, add_
-from .addmm import addmm
+from .addmm import addmm, addmm_out
 from .all import all
 from .any import any
 from .arange import arange
@@ -32,7 +32,7 @@ from .masked_fill import masked_fill
 from .max import max
 from .mean import mean, mean_dim
 from .min import min
-from .mm import mm
+from .mm import mm, mm_out
 from .multinomial import multinomial
 from .neg import neg, neg_
 from .ones import ones
@@ -54,6 +54,7 @@ __all__ = [
     "add",
     "add_",
     "addmm",
+    "addmm_out",
     "all",
     "any",
     "arange",
@@ -81,6 +82,7 @@ __all__ = [
     "mean_dim",
     "min",
     "mm",
+    "mm_out",
     "multinomial",
     "neg",
     "neg_",

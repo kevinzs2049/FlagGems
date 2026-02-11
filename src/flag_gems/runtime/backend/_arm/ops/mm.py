@@ -4,26 +4,9 @@ import torch
 import triton
 import triton.language as tl
 
-# from .. import runtime
-# from ..runtime import torch_device_fn
-# from ..utils import libentry, libtuner
 from flag_gems.utils import triton_lang_extension as tle
 
 
-# @libentry()
-# @libtuner(
-#     configs=runtime.get_tuned_config("mm"),
-#     key=["M", "N", "K"],
-# )
-# @triton.heuristics(runtime.get_heuristic_config("mm"))
-@triton.autotune(
-    configs=[
-        triton.Config(
-            {"BLOCK_M": 8, "BLOCK_N": 4, "BLOCK_K": 4, "SPLIT_K": 1, "EVEN_K": 0}
-        )
-    ],
-    key=["M", "N", "K"],
-)
 @triton.jit
 def mm_kernel(
     A,
@@ -112,6 +95,25 @@ def get_higher_dtype(a, b):
             return a
 
 
+def _select_mm_config(M, N, K):
+    # Tuned from Qwen3 decode hotspot shapes on triton-cpu.
+    if N >= 65536:
+        return 4, 16, 8
+    if M <= 1:
+        if N >= 2048:
+            return 8, 4, 4
+        if K >= 2048:
+            return 8, 8, 8
+        return 8, 16, 8
+    if M <= 8:
+        if N >= 2048:
+            return 8, 16, 8
+        if K >= 2048:
+            return 8, 32, 8
+        return 8, 8, 8
+    return 8, 8, 8
+
+
 def mm(a, b):
     logging.debug("GEMS MM")
     device = a.device
@@ -127,13 +129,13 @@ def mm(a, b):
     # allocates output
     c_dtype = get_higher_dtype(a.dtype, b.dtype)
     c = torch.empty((M, N), device=device, dtype=c_dtype)
-    dot_out_dtype = tl.float32
+    BLOCK_M, BLOCK_N, BLOCK_K = _select_mm_config(M, N, K)
+    EVEN_K = K % BLOCK_K == 0
     # launch kernel
     grid = lambda META: (
-        triton.cdiv(M, META["BLOCK_M"]) * triton.cdiv(N, META["BLOCK_N"]),
-        META["SPLIT_K"],
+        triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N),
+        1,
     )
-    # with torch_device_fn.device(a.device):
     mm_kernel[grid](
         a,
         b,
@@ -147,7 +149,55 @@ def mm(a, b):
         b.stride(1),
         c.stride(0),
         c.stride(1),
-        dot_out_dtype=dot_out_dtype,
+        dot_out_dtype=tl.float32,
+        BLOCK_M=BLOCK_M,
+        BLOCK_N=BLOCK_N,
+        BLOCK_K=BLOCK_K,
         GROUP_M=8,
+        SPLIT_K=1,
+        EVEN_K=EVEN_K,
     )
     return c
+
+
+def mm_out(a, b, *, out):
+    logging.debug("GEMS MM_OUT")
+    if a.stride(0) > 1 and a.stride(1) > 1:
+        a = a.contiguous()
+    if b.stride(0) > 1 and b.stride(1) > 1:
+        b = b.contiguous()
+
+    assert a.shape[1] == b.shape[0], "incompatible dimensions"
+    M, K = a.shape
+    _, N = b.shape
+    assert out is not None, "out tensor is required"
+    assert out.shape == (M, N), "incompatible out shape"
+    BLOCK_M, BLOCK_N, BLOCK_K = _select_mm_config(M, N, K)
+    EVEN_K = K % BLOCK_K == 0
+
+    grid = lambda META: (
+        triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N),
+        1,
+    )
+    mm_kernel[grid](
+        a,
+        b,
+        out,
+        M,
+        N,
+        K,
+        a.stride(0),
+        a.stride(1),
+        b.stride(0),
+        b.stride(1),
+        out.stride(0),
+        out.stride(1),
+        dot_out_dtype=tl.float32,
+        BLOCK_M=BLOCK_M,
+        BLOCK_N=BLOCK_N,
+        BLOCK_K=BLOCK_K,
+        GROUP_M=8,
+        SPLIT_K=1,
+        EVEN_K=EVEN_K,
+    )
+    return out
