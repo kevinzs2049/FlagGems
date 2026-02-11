@@ -6,7 +6,6 @@ import torch
 import triton
 import triton.language as tl
 
-SMALL_CAT_NUMEL_THRESHOLD = 4_096
 
 @triton.jit
 def cat_kernel(
@@ -50,11 +49,11 @@ def cat_kernel_dim0_contig(
         total_elements,
         BLOCK_SIZE: tl.constexpr,
 ):
-    logging.debug("GEMS CAT cat_kernel_dim0_contig")
     pid = tl.program_id(0)
     offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offs < total_elements
     tl.store(out_ptr + offset + offs, tl.load(in_ptr + offs, mask=mask), mask=mask)
+
 
 
 def cat(
@@ -91,30 +90,9 @@ def cat(
         empty_shape[dim] = 0
         return torch.empty(empty_shape, dtype=A[0].dtype, device=A[0].device)
 
-    total_numel = sum(t.numel() for t in A)
     out_shape = list(base_shape)
     out_shape[dim] = sum(t.shape[dim] for t in A)
     out = torch.empty(out_shape, dtype=A[0].dtype, device=A[0].device)
-
-    if all(t.is_contiguous() and t.device == out.device and t.dtype == out.dtype for t in A):
-        offset_dim = 0
-        for t in A:
-            if t.numel() == 0:
-                continue
-            out_slice = out.narrow(dim, offset_dim, t.shape[dim])
-            out_slice.copy_(t)
-            offset_dim += t.shape[dim]
-        return out
-
-    if total_numel <= SMALL_CAT_NUMEL_THRESHOLD:
-        offset_dim = 0
-        for t in A:
-            if t.numel() == 0:
-                continue
-            out_slice = out.narrow(dim, offset_dim, t.shape[dim])
-            out_slice.copy_(t)
-            offset_dim += t.shape[dim]
-        return out
 
     out_strides = torch.tensor(out.stride(), dtype=torch.int32, device=out.device)
     offset = 0
@@ -146,7 +124,7 @@ def cat(
         # Use a larger tile on CPU to better amortize kernel launch overhead and
         # enable vectorization. Keep a smaller tile elsewhere to avoid bloating
         # register pressure on GPU backends.
-        block_size = 16 if t.device.type == "cpu" else 128
+        block_size = 256 if t.device.type == "cpu" else 128
         grid = lambda META: (triton.cdiv(total_elements, META["BLOCK_SIZE"]),)
         cat_kernel[grid](
             in_ptr=t,
