@@ -1,10 +1,30 @@
 import logging
+import os
 
 import torch
 import triton
 import triton.language as tl
 
 from flag_gems.utils import triton_lang_extension as tle
+
+
+MM_GENERIC_CONFIG_TABLE = (
+    # Decode-like long vocab projection prefers narrower N tiles.
+    {"m_max": 1, "n_min": 65536, "k_min": 0, "config": (4, 16, 8)},
+    # Batched decode/prefill small-M cases.
+    {"m_max": 8, "n_min": 2048, "k_min": 0, "config": (8, 16, 8)},
+    {"m_max": 8, "n_min": 0, "k_min": 2048, "config": (8, 32, 8)},
+    {"m_max": 8, "n_min": 0, "k_min": 0, "config": (8, 8, 8)},
+)
+
+MM_M1_CONFIG_TABLE = (
+    # Keep very large vocab projection on the generic kernel.
+    {"n_min": 65536, "k_min": 0, "config": None},
+    {"n_min": 2048, "k_min": 0, "config": (32, 8)},
+    {"n_min": 0, "k_min": 3072, "config": (128, 8)},
+    {"n_min": 0, "k_min": 2048, "config": (32, 16)},
+    {"n_min": 0, "k_min": 0, "config": (64, 8)},
+)
 
 
 @triton.jit
@@ -78,6 +98,54 @@ def mm_kernel(
         tl.atomic_add(C, acc, mask=mask)
 
 
+@triton.jit
+def mm_m1_kernel(
+    A,
+    B,
+    C,
+    N,
+    K,
+    stride_ak,
+    stride_bk,
+    stride_bn,
+    stride_cn,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    EVEN_K: tl.constexpr,
+):
+    pid_n = tle.program_id(0)
+    rn = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    rk = tl.arange(0, BLOCK_K)
+
+    a_ptr = A + rk * stride_ak
+    b_ptr = B + rk[:, None] * stride_bk + rn[None, :] * stride_bn
+    acc = tl.zeros((BLOCK_N,), dtype=tl.float32)
+
+    for k in range(0, tl.cdiv(K, BLOCK_K)):
+        if EVEN_K:
+            a = tl.load(a_ptr)
+            b = tl.load(b_ptr)
+        else:
+            k_remaining = K - k * BLOCK_K
+            a = tl.load(a_ptr, mask=rk < k_remaining, other=0.0)
+            b = tl.load(
+                b_ptr,
+                mask=(rk[:, None] < k_remaining) & (rn[None, :] < N),
+                other=0.0,
+            )
+
+        if a.dtype != b.dtype:
+            a = a.to(C.dtype.element_ty)
+            b = b.to(C.dtype.element_ty)
+
+        acc += tl.sum(b * a[:, None], axis=0)
+        a_ptr += BLOCK_K * stride_ak
+        b_ptr += BLOCK_K * stride_bk
+
+    c_ptr = C + rn * stride_cn
+    tl.store(c_ptr, acc.to(C.dtype.element_ty), mask=rn < N)
+
+
 _ordered_datatypes = [torch.float16, torch.bfloat16, torch.float32]
 
 
@@ -95,23 +163,35 @@ def get_higher_dtype(a, b):
             return a
 
 
+def _match_mnk_rule(M, N, K, rule):
+    m_max = rule.get("m_max")
+    n_min = rule.get("n_min", 0)
+    k_min = rule.get("k_min", 0)
+    if m_max is not None and M > m_max:
+        return False
+    if N < n_min:
+        return False
+    if K < k_min:
+        return False
+    return True
+
+
 def _select_mm_config(M, N, K):
-    # Tuned from Qwen3 decode hotspot shapes on triton-cpu.
-    if N >= 65536:
-        return 4, 16, 8
-    if M <= 1:
-        if N >= 2048:
-            return 8, 4, 4
-        if K >= 2048:
-            return 8, 8, 8
-        return 8, 16, 8
-    if M <= 8:
-        if N >= 2048:
-            return 8, 16, 8
-        if K >= 2048:
-            return 8, 32, 8
-        return 8, 8, 8
+    for rule in MM_GENERIC_CONFIG_TABLE:
+        if _match_mnk_rule(M, N, K, rule):
+            return rule["config"]
     return 8, 8, 8
+
+
+def _select_mm_m1_config(N, K):
+    for rule in MM_M1_CONFIG_TABLE:
+        if N >= rule.get("n_min", 0) and K >= rule.get("k_min", 0):
+            return rule["config"]
+    return 64, 8
+
+
+def _m1_fastpath_enabled():
+    return os.getenv("FLAGGEMS_ARM_M1_FASTPATH", "0").lower() in ("1", "true", "on")
 
 
 def mm(a, b):
@@ -129,6 +209,28 @@ def mm(a, b):
     # allocates output
     c_dtype = get_higher_dtype(a.dtype, b.dtype)
     c = torch.empty((M, N), device=device, dtype=c_dtype)
+    if M == 1 and _m1_fastpath_enabled():
+        m1_cfg = _select_mm_m1_config(N, K)
+        if m1_cfg is not None:
+            BLOCK_N, BLOCK_K = m1_cfg
+            EVEN_K = K % BLOCK_K == 0
+            grid = lambda META: (triton.cdiv(N, BLOCK_N),)
+            mm_m1_kernel[grid](
+                a,
+                b,
+                c,
+                N,
+                K,
+                a.stride(1),
+                b.stride(0),
+                b.stride(1),
+                c.stride(1),
+                BLOCK_N=BLOCK_N,
+                BLOCK_K=BLOCK_K,
+                EVEN_K=EVEN_K,
+            )
+            return c
+
     BLOCK_M, BLOCK_N, BLOCK_K = _select_mm_config(M, N, K)
     EVEN_K = K % BLOCK_K == 0
     # launch kernel
@@ -172,6 +274,28 @@ def mm_out(a, b, *, out):
     _, N = b.shape
     assert out is not None, "out tensor is required"
     assert out.shape == (M, N), "incompatible out shape"
+    if M == 1 and _m1_fastpath_enabled():
+        m1_cfg = _select_mm_m1_config(N, K)
+        if m1_cfg is not None:
+            BLOCK_N, BLOCK_K = m1_cfg
+            EVEN_K = K % BLOCK_K == 0
+            grid = lambda META: (triton.cdiv(N, BLOCK_N),)
+            mm_m1_kernel[grid](
+                a,
+                b,
+                out,
+                N,
+                K,
+                a.stride(1),
+                b.stride(0),
+                b.stride(1),
+                out.stride(1),
+                BLOCK_N=BLOCK_N,
+                BLOCK_K=BLOCK_K,
+                EVEN_K=EVEN_K,
+            )
+            return out
+
     BLOCK_M, BLOCK_N, BLOCK_K = _select_mm_config(M, N, K)
     EVEN_K = K % BLOCK_K == 0
 
