@@ -1,5 +1,6 @@
 import logging
 import os
+from collections import OrderedDict
 
 import torch
 import triton
@@ -25,6 +26,17 @@ MM_M1_CONFIG_TABLE = (
     {"n_min": 0, "k_min": 2048, "config": (32, 16)},
     {"n_min": 0, "k_min": 0, "config": (64, 8)},
 )
+
+MM_M1_TRANSPOSED_CONFIG_TABLE = (
+    # Keep very large vocab projection on the generic kernel.
+    {"n_min": 65536, "k_min": 0, "config": None},
+    {"n_min": 2048, "k_min": 0, "config": (32, 16)},
+    {"n_min": 0, "k_min": 3072, "config": (16, 16)},
+    {"n_min": 0, "k_min": 0, "config": (8, 32)},
+)
+
+_MM_PREPACK_CACHE = OrderedDict()
+_MM_PREPACK_CACHE_BYTES = 0
 
 
 @triton.jit
@@ -146,6 +158,54 @@ def mm_m1_kernel(
     tl.store(c_ptr, acc.to(C.dtype.element_ty), mask=rn < N)
 
 
+@triton.jit
+def mm_m1_transposed_rhs_kernel(
+    A,
+    B,
+    C,
+    N,
+    K,
+    stride_ak,
+    stride_bk,
+    stride_bn,
+    stride_cn,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    EVEN_K: tl.constexpr,
+):
+    pid_n = tle.program_id(0)
+    rn = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    rk = tl.arange(0, BLOCK_K)
+
+    a_ptr = A + rk * stride_ak
+    # For transposed RHS views (stride_bk == 1), load [BLOCK_N, BLOCK_K]
+    # so the K dimension is contiguous in memory.
+    bt_ptr = B + rn[:, None] * stride_bn + rk[None, :] * stride_bk
+    acc = tl.zeros((BLOCK_N,), dtype=tl.float32)
+
+    for k in range(0, tl.cdiv(K, BLOCK_K)):
+        if EVEN_K:
+            a = tl.load(a_ptr)
+            bt = tl.load(bt_ptr, mask=rn[:, None] < N, other=0.0)
+        else:
+            k_remaining = K - k * BLOCK_K
+            a = tl.load(a_ptr, mask=rk < k_remaining, other=0.0)
+            bt = tl.load(
+                bt_ptr,
+                mask=(rn[:, None] < N) & (rk[None, :] < k_remaining),
+                other=0.0,
+            )
+
+        a_fp = a.to(tl.float32)
+        bt_fp = bt.to(tl.float32)
+        acc += tl.sum(bt_fp * a_fp[None, :], axis=1)
+        a_ptr += BLOCK_K * stride_ak
+        bt_ptr += BLOCK_K * stride_bk
+
+    c_ptr = C + rn * stride_cn
+    tl.store(c_ptr, acc.to(C.dtype.element_ty), mask=rn < N)
+
+
 _ordered_datatypes = [torch.float16, torch.bfloat16, torch.float32]
 
 
@@ -190,8 +250,145 @@ def _select_mm_m1_config(N, K):
     return 64, 8
 
 
+def _select_mm_m1_transposed_config(N, K):
+    for rule in MM_M1_TRANSPOSED_CONFIG_TABLE:
+        if N >= rule.get("n_min", 0) and K >= rule.get("k_min", 0):
+            return rule["config"]
+    return 8, 32
+
+
 def _m1_fastpath_enabled():
     return os.getenv("FLAGGEMS_ARM_M1_FASTPATH", "0").lower() in ("1", "true", "on")
+
+
+def _m1_transposed_fastpath_enabled():
+    return os.getenv("FLAGGEMS_ARM_M1_TRANSPOSED_FASTPATH", "1").lower() in (
+        "1",
+        "true",
+        "on",
+    )
+
+
+def _mm_prepack_enabled():
+    return os.getenv("FLAGGEMS_ARM_MM_PREPACK", "0").lower() in ("1", "true", "on")
+
+
+def _get_env_int(name, default):
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _tensor_nbytes(t):
+    return int(t.numel()) * int(t.element_size())
+
+
+def _is_rhs_transposed_layout(rhs):
+    if rhs.ndim != 2:
+        return False
+    # Typical weight.t() view: stride(0) == 1, stride(1) == K.
+    return rhs.stride(0) == 1 and rhs.stride(1) >= rhs.shape[0]
+
+
+def _prepack_key(rhs):
+    return (
+        int(rhs.data_ptr()),
+        tuple(rhs.shape),
+        tuple(rhs.stride()),
+        str(rhs.dtype),
+        str(rhs.device),
+    )
+
+
+def _maybe_get_prepacked_rhs(rhs):
+    global _MM_PREPACK_CACHE_BYTES
+    if not _mm_prepack_enabled():
+        return None
+
+    max_bytes = max(_get_env_int("FLAGGEMS_ARM_MM_PREPACK_MAX_BYTES", 0), 0)
+    if max_bytes <= 0:
+        return None
+
+    max_tensor_bytes = max(
+        _get_env_int("FLAGGEMS_ARM_MM_PREPACK_MAX_TENSOR_BYTES", 8 * 1024 * 1024), 0
+    )
+    rhs_bytes = _tensor_nbytes(rhs)
+    if max_tensor_bytes > 0 and rhs_bytes > max_tensor_bytes:
+        return None
+    if rhs_bytes > max_bytes:
+        return None
+
+    key = _prepack_key(rhs)
+    packed = _MM_PREPACK_CACHE.get(key)
+    if packed is not None:
+        _MM_PREPACK_CACHE.move_to_end(key)
+        return packed
+
+    packed = rhs.contiguous()
+    packed_bytes = _tensor_nbytes(packed)
+    max_entries = max(_get_env_int("FLAGGEMS_ARM_MM_PREPACK_MAX_ENTRIES", 32), 1)
+    while _MM_PREPACK_CACHE and (
+        _MM_PREPACK_CACHE_BYTES + packed_bytes > max_bytes
+        or len(_MM_PREPACK_CACHE) >= max_entries
+    ):
+        _, evicted = _MM_PREPACK_CACHE.popitem(last=False)
+        _MM_PREPACK_CACHE_BYTES -= _tensor_nbytes(evicted)
+
+    if packed_bytes > max_bytes:
+        return None
+
+    _MM_PREPACK_CACHE[key] = packed
+    _MM_PREPACK_CACHE_BYTES += packed_bytes
+    return packed
+
+
+def _launch_mm_m1_kernel(a, b, c, N, K):
+    m1_cfg = _select_mm_m1_config(N, K)
+    if m1_cfg is None:
+        return False
+    BLOCK_N, BLOCK_K = m1_cfg
+    EVEN_K = K % BLOCK_K == 0
+    grid = lambda META: (triton.cdiv(N, BLOCK_N),)
+    mm_m1_kernel[grid](
+        a,
+        b,
+        c,
+        N,
+        K,
+        a.stride(1),
+        b.stride(0),
+        b.stride(1),
+        c.stride(1),
+        BLOCK_N=BLOCK_N,
+        BLOCK_K=BLOCK_K,
+        EVEN_K=EVEN_K,
+    )
+    return True
+
+
+def _launch_mm_m1_transposed_rhs_kernel(a, b, c, N, K):
+    cfg = _select_mm_m1_transposed_config(N, K)
+    if cfg is None:
+        return False
+    BLOCK_N, BLOCK_K = cfg
+    EVEN_K = K % BLOCK_K == 0
+    grid = lambda META: (triton.cdiv(N, BLOCK_N),)
+    mm_m1_transposed_rhs_kernel[grid](
+        a,
+        b,
+        c,
+        N,
+        K,
+        a.stride(1),
+        b.stride(0),
+        b.stride(1),
+        c.stride(1),
+        BLOCK_N=BLOCK_N,
+        BLOCK_K=BLOCK_K,
+        EVEN_K=EVEN_K,
+    )
+    return True
 
 
 def mm(a, b):
@@ -208,28 +405,29 @@ def mm(a, b):
     _, N = b.shape
     # allocates output
     c_dtype = get_higher_dtype(a.dtype, b.dtype)
-    c = torch.empty((M, N), device=device, dtype=c_dtype)
-    if M == 1 and _m1_fastpath_enabled():
-        m1_cfg = _select_mm_m1_config(N, K)
-        if m1_cfg is not None:
-            BLOCK_N, BLOCK_K = m1_cfg
-            EVEN_K = K % BLOCK_K == 0
-            grid = lambda META: (triton.cdiv(N, BLOCK_N),)
-            mm_m1_kernel[grid](
-                a,
-                b,
-                c,
-                N,
-                K,
-                a.stride(1),
-                b.stride(0),
-                b.stride(1),
-                c.stride(1),
-                BLOCK_N=BLOCK_N,
-                BLOCK_K=BLOCK_K,
-                EVEN_K=EVEN_K,
-            )
-            return c
+    use_fp32_kernel = a.dtype is torch.bfloat16 or b.dtype is torch.bfloat16
+    # Keep bf16 inputs to avoid expensive full-tensor dtype conversion.
+    # Use fp32 output buffer to avoid bf16 masked-store lowering failures.
+    a_kernel = a
+    b_kernel = b
+    c_kernel = torch.empty(
+        (M, N),
+        device=device,
+        dtype=(torch.float32 if use_fp32_kernel else c_dtype),
+    )
+    if M == 1:
+        if _m1_transposed_fastpath_enabled() and _is_rhs_transposed_layout(b_kernel):
+            packed_rhs = _maybe_get_prepacked_rhs(b_kernel)
+            if packed_rhs is not None and _launch_mm_m1_kernel(
+                a_kernel, packed_rhs, c_kernel, N, K
+            ):
+                return c_kernel.to(c_dtype) if use_fp32_kernel else c_kernel
+            if _launch_mm_m1_transposed_rhs_kernel(a_kernel, b_kernel, c_kernel, N, K):
+                return c_kernel.to(c_dtype) if use_fp32_kernel else c_kernel
+        if _m1_fastpath_enabled() and _launch_mm_m1_kernel(
+            a_kernel, b_kernel, c_kernel, N, K
+        ):
+            return c_kernel.to(c_dtype) if use_fp32_kernel else c_kernel
 
     BLOCK_M, BLOCK_N, BLOCK_K = _select_mm_config(M, N, K)
     EVEN_K = K % BLOCK_K == 0
@@ -239,18 +437,18 @@ def mm(a, b):
         1,
     )
     mm_kernel[grid](
-        a,
-        b,
-        c,
+        a_kernel,
+        b_kernel,
+        c_kernel,
         M,
         N,
         K,
-        a.stride(0),
-        a.stride(1),
-        b.stride(0),
-        b.stride(1),
-        c.stride(0),
-        c.stride(1),
+        a_kernel.stride(0),
+        a_kernel.stride(1),
+        b_kernel.stride(0),
+        b_kernel.stride(1),
+        c_kernel.stride(0),
+        c_kernel.stride(1),
         dot_out_dtype=tl.float32,
         BLOCK_M=BLOCK_M,
         BLOCK_N=BLOCK_N,
@@ -259,7 +457,7 @@ def mm(a, b):
         SPLIT_K=1,
         EVEN_K=EVEN_K,
     )
-    return c
+    return c_kernel.to(c_dtype) if use_fp32_kernel else c_kernel
 
 
 def mm_out(a, b, *, out):
@@ -274,26 +472,32 @@ def mm_out(a, b, *, out):
     _, N = b.shape
     assert out is not None, "out tensor is required"
     assert out.shape == (M, N), "incompatible out shape"
-    if M == 1 and _m1_fastpath_enabled():
-        m1_cfg = _select_mm_m1_config(N, K)
-        if m1_cfg is not None:
-            BLOCK_N, BLOCK_K = m1_cfg
-            EVEN_K = K % BLOCK_K == 0
-            grid = lambda META: (triton.cdiv(N, BLOCK_N),)
-            mm_m1_kernel[grid](
-                a,
-                b,
-                out,
-                N,
-                K,
-                a.stride(1),
-                b.stride(0),
-                b.stride(1),
-                out.stride(1),
-                BLOCK_N=BLOCK_N,
-                BLOCK_K=BLOCK_K,
-                EVEN_K=EVEN_K,
-            )
+    use_fp32_kernel = a.dtype is torch.bfloat16 or b.dtype is torch.bfloat16
+    a_kernel = a
+    b_kernel = b
+    out_kernel = (
+        torch.empty((M, N), device=out.device, dtype=torch.float32)
+        if use_fp32_kernel
+        else out
+    )
+    if M == 1:
+        if _m1_transposed_fastpath_enabled() and _is_rhs_transposed_layout(b_kernel):
+            packed_rhs = _maybe_get_prepacked_rhs(b_kernel)
+            if packed_rhs is not None and _launch_mm_m1_kernel(
+                a_kernel, packed_rhs, out_kernel, N, K
+            ):
+                if use_fp32_kernel:
+                    out.copy_(out_kernel.to(out.dtype))
+                return out
+            if _launch_mm_m1_transposed_rhs_kernel(a_kernel, b_kernel, out_kernel, N, K):
+                if use_fp32_kernel:
+                    out.copy_(out_kernel.to(out.dtype))
+                return out
+        if _m1_fastpath_enabled() and _launch_mm_m1_kernel(
+            a_kernel, b_kernel, out_kernel, N, K
+        ):
+            if use_fp32_kernel:
+                out.copy_(out_kernel.to(out.dtype))
             return out
 
     BLOCK_M, BLOCK_N, BLOCK_K = _select_mm_config(M, N, K)
@@ -304,18 +508,18 @@ def mm_out(a, b, *, out):
         1,
     )
     mm_kernel[grid](
-        a,
-        b,
-        out,
+        a_kernel,
+        b_kernel,
+        out_kernel,
         M,
         N,
         K,
-        a.stride(0),
-        a.stride(1),
-        b.stride(0),
-        b.stride(1),
-        out.stride(0),
-        out.stride(1),
+        a_kernel.stride(0),
+        a_kernel.stride(1),
+        b_kernel.stride(0),
+        b_kernel.stride(1),
+        out_kernel.stride(0),
+        out_kernel.stride(1),
         dot_out_dtype=tl.float32,
         BLOCK_M=BLOCK_M,
         BLOCK_N=BLOCK_N,
@@ -324,4 +528,6 @@ def mm_out(a, b, *, out):
         SPLIT_K=1,
         EVEN_K=EVEN_K,
     )
+    if use_fp32_kernel:
+        out.copy_(out_kernel.to(out.dtype))
     return out
