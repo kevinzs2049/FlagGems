@@ -96,6 +96,33 @@ def _pow_square_rows1024_hot_kernel(
 
 
 @triton.jit
+def _pow_square_3584_hot_kernel(
+    x_ptr,
+    out_ptr,
+):
+    offs = tl.arange(0, 256)
+    for base in range(0, 3584, 256):
+        x = tl.load(x_ptr + base + offs)
+        tl.store(out_ptr + base + offs, x * x)
+
+
+@triton.jit(do_not_specialize=["rows"])
+def _pow_square_rows3584_hot_kernel(
+    x_ptr,
+    out_ptr,
+    rows,
+    MAX_ROWS: tl.constexpr,
+):
+    offs = tl.arange(0, 256)
+    for row in range(0, MAX_ROWS):
+        if row < rows:
+            base = row * 3584
+            for k in range(0, 3584, 256):
+                x = tl.load(x_ptr + base + k + offs)
+                tl.store(out_ptr + base + k + offs, x * x)
+
+
+@triton.jit
 def _pow_sqrt_kernel(x_ptr, out_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
     pid = tl.program_id(0)
     num_prog = tl.num_programs(0)
@@ -244,6 +271,18 @@ def _maybe_launch_pow_square_hotshape(x, out_tensor, n_elements):
                 num_stages=1,
             )
             return True
+    if last_dim == 3584:
+        rows = n_elements // 3584
+        if rows > 0 and rows <= 128 and rows * 3584 == n_elements:
+            _pow_square_rows3584_hot_kernel[(1,)](
+                x,
+                out_tensor,
+                rows,
+                MAX_ROWS=128,
+                num_warps=1,
+                num_stages=1,
+            )
+            return True
     return False
 
 
@@ -278,6 +317,14 @@ def _pow_tensor_scalar_special(x, exponent, out=None):
     if exponent == 2.0:
         if n_elements == 1024 and x.is_contiguous():
             _pow_square_1024_hot_kernel[(1,)](
+                x,
+                out_tensor,
+                num_warps=1,
+                num_stages=1,
+            )
+            return out_tensor
+        if n_elements == 3584 and x.is_contiguous():
+            _pow_square_3584_hot_kernel[(1,)](
                 x,
                 out_tensor,
                 num_warps=1,
@@ -331,6 +378,26 @@ def _maybe_prewarm_pow_kernels():
                 out2048,
                 rows,
                 MAX_ROWS=96,
+                num_warps=1,
+                num_stages=1,
+            )
+
+            x3584 = torch.ones((1, 1, 3584), dtype=dt, device="cpu")
+            out3584 = torch.empty_like(x3584)
+            _pow_square_3584_hot_kernel[(1,)](
+                x3584,
+                out3584,
+                num_warps=1,
+                num_stages=1,
+            )
+
+            x_rows3584 = torch.ones((1, 128, 3584), dtype=dt, device="cpu")
+            out_rows3584 = torch.empty_like(x_rows3584)
+            _pow_square_rows3584_hot_kernel[(1,)](
+                x_rows3584,
+                out_rows3584,
+                128,
+                MAX_ROWS=128,
                 num_warps=1,
                 num_stages=1,
             )

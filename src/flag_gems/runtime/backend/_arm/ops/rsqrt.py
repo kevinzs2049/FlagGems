@@ -102,6 +102,17 @@ def _rsqrt_rows16_hot_kernel(
         tl.store(out_ptr + row, y.to(out_ptr.dtype.element_ty))
 
 
+@triton.jit
+def _rsqrt_rows128_hot_kernel(
+    x_ptr,
+    out_ptr,
+):
+    for row in range(0, 128):
+        x = tl.load(x_ptr + row)
+        y = 1.0 / tl.sqrt(x.to(tl.float32))
+        tl.store(out_ptr + row, y.to(out_ptr.dtype.element_ty))
+
+
 @triton.jit(do_not_specialize=["rows"])
 def _rsqrt_rows_hot_kernel(
     x_ptr,
@@ -219,6 +230,14 @@ def _maybe_launch_rsqrt_hotshape(x_contig, out_contig, n_elements):
                     num_stages=1,
                 )
                 return True
+            if n_elements == 128:
+                _rsqrt_rows128_hot_kernel[(1,)](
+                    x_contig,
+                    out_contig,
+                    num_warps=1,
+                    num_stages=1,
+                )
+                return True
             _rsqrt_rows_hot_kernel[(1,)](
                 x_contig,
                 out_contig,
@@ -256,7 +275,7 @@ def _rsqrt_triton(x, out=None):
     n_elements = x.numel()
     if n_elements == 0:
         return x if out is None else out
-    if n_elements == 1 and x.dtype is torch.bfloat16:
+    if n_elements == 1:
         val = float(x.item())
         if val < 0.0:
             val = float("nan")
@@ -330,6 +349,15 @@ def _maybe_prewarm_rsqrt_kernels():
             _rsqrt_rows16_hot_kernel[(1,)](
                 x16,
                 out16,
+                num_warps=1,
+                num_stages=1,
+            )
+
+            x128 = torch.ones((1, 1, 128, 1), dtype=dt, device="cpu")
+            out128 = torch.empty_like(x128)
+            _rsqrt_rows128_hot_kernel[(1,)](
+                x128,
+                out128,
                 num_warps=1,
                 num_stages=1,
             )

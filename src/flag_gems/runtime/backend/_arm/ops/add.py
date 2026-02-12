@@ -187,6 +187,33 @@ def _add_contiguous_2048_hot_alpha1_kernel(
         tl.store(out_ptr + base + offs, x + y)
 
 
+@triton.jit(do_not_specialize=["alpha"])
+def _add_contiguous_3584_hot_kernel(
+    x_ptr,
+    y_ptr,
+    out_ptr,
+    alpha,
+):
+    offs = tl.arange(0, 256)
+    for base in range(0, 3584, 256):
+        x = tl.load(x_ptr + base + offs)
+        y = tl.load(y_ptr + base + offs)
+        tl.store(out_ptr + base + offs, x + y * alpha)
+
+
+@triton.jit
+def _add_contiguous_3584_hot_alpha1_kernel(
+    x_ptr,
+    y_ptr,
+    out_ptr,
+):
+    offs = tl.arange(0, 256)
+    for base in range(0, 3584, 256):
+        x = tl.load(x_ptr + base + offs)
+        y = tl.load(y_ptr + base + offs)
+        tl.store(out_ptr + base + offs, x + y)
+
+
 @pointwise_dynamic(is_tensor=[True, True, False], promotion_methods=[(0, 1, "DEFAULT")])
 @triton.jit
 def _arm_add_func(x, y, alpha):
@@ -257,6 +284,24 @@ def _base_add_(A, B, *, alpha=1):
         return _arm_add_func_tensor_scalar(A, B, alpha, out0=A)
     raise ValueError("Unreachable.")
 
+
+def _is_contiguous_add_3584_hotshape(A, B, alpha):
+    return (
+        alpha == 1
+        and isinstance(A, torch.Tensor)
+        and isinstance(B, torch.Tensor)
+        and A.device.type == "cpu"
+        and B.device == A.device
+        and A.dtype == B.dtype
+        and A.dtype in (torch.bfloat16, torch.float32, torch.float64)
+        and A.is_contiguous()
+        and B.is_contiguous()
+        and A.ndim == 3
+        and A.shape == (1, 1, 3584)
+        and B.shape == A.shape
+    )
+
+
 def _use_triton(n_elements):
     return n_elements >= 4096
 
@@ -322,6 +367,25 @@ def _launch_contiguous_add_kernel(x, y, out, alpha, total_elements, block_size):
             )
             return
         _add_contiguous_2048_hot_kernel[(1,)](
+            x,
+            y,
+            out,
+            alpha,
+            num_warps=1,
+            num_stages=1,
+        )
+        return
+    if total_elements == 3584:
+        if alpha == 1.0:
+            _add_contiguous_3584_hot_alpha1_kernel[(1,)](
+                x,
+                y,
+                out,
+                num_warps=1,
+                num_stages=1,
+            )
+            return
+        _add_contiguous_3584_hot_kernel[(1,)](
             x,
             y,
             out,
@@ -602,6 +666,20 @@ def _maybe_prewarm_add_kernels():
                 block2048,
             )
 
+            # Decode hotspot: [1, 1, 3584] contiguous add
+            x3584 = torch.zeros((1, 1, 3584), dtype=dt, device="cpu")
+            y3584 = torch.zeros((1, 1, 3584), dtype=dt, device="cpu")
+            out3584 = torch.empty_like(x3584)
+            block3584 = _select_contiguous_block(x3584.numel(), x3584.dtype, x3584)
+            _launch_contiguous_add_kernel(
+                x3584,
+                y3584,
+                out3584,
+                1.0,
+                x3584.numel(),
+                block3584,
+            )
+
             # Decode hotspot scalar-add shapes.
             x1 = torch.zeros((1, 1, 1), dtype=dt, device="cpu")
             out1 = torch.empty_like(x1)
@@ -617,6 +695,16 @@ def _maybe_prewarm_add_kernels():
 
 def add(A, B, *, alpha=1):
     logging.debug("GEMS_ARM ADD")
+    if _ADD_TRITON_ENABLED and _is_contiguous_add_3584_hotshape(A, B, alpha):
+        out = torch.empty_like(A)
+        _add_contiguous_3584_hot_alpha1_kernel[(1,)](
+            A,
+            B,
+            out,
+            num_warps=1,
+            num_stages=1,
+        )
+        return out
     _maybe_prewarm_add_kernels()
     if not _ADD_TRITON_ENABLED:
         return _base_add(A, B, alpha=alpha)
@@ -634,7 +722,14 @@ def add(A, B, *, alpha=1):
             if not _use_triton_scalar(A.numel()):
                 return _base_add(A, scalar, alpha=alpha)
             return _add_tensor_scalar_triton(A, scalar, alpha)
-        if A.shape == B.shape and A.is_contiguous() and B.is_contiguous():
+        # For decode-size tensors, normalize layout and stay on Triton path.
+        if (
+            A.shape == B.shape
+            and A.device.type == "cpu"
+            and B.device == A.device
+            and A.dtype == B.dtype
+            and A.numel() <= 8192
+        ):
             return _add_tensor_tensor_triton(A, B, alpha)
         if _use_triton(A.numel()) and _is_broadcast_lastdim(A, B):
             return _add_tensor_tensor_triton(A, B, alpha)
@@ -648,6 +743,15 @@ def add(A, B, *, alpha=1):
 
 def add_(A, B, *, alpha=1):
     logging.debug("GEMS_ARM ADD_")
+    if _ADD_TRITON_ENABLED and _is_contiguous_add_3584_hotshape(A, B, alpha):
+        _add_contiguous_3584_hot_alpha1_kernel[(1,)](
+            A,
+            B,
+            A,
+            num_warps=1,
+            num_stages=1,
+        )
+        return A
     _maybe_prewarm_add_kernels()
     if not _ADD_TRITON_ENABLED:
         return _base_add_(A, B, alpha=alpha)

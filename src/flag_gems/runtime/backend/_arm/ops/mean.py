@@ -101,6 +101,29 @@ def _mean_lastdim_8x128_hot_kernel(inp, out):
         tl.store(out + row, mean_val.to(out.dtype.element_ty))
 
 
+@triton.jit
+def _mean_lastdim_1x3584_hot_kernel(inp, out):
+    offs = tl.arange(0, 256)
+    acc = 0.0
+    for base in range(0, 3584, 256):
+        x = tl.load(inp + base + offs).to(tl.float32)
+        acc += tl.sum(x, axis=0)
+    tl.store(out, (acc / 3584.0).to(out.dtype.element_ty))
+
+
+@triton.jit(do_not_specialize=["rows"])
+def _mean_lastdim_rows3584_hot_kernel(inp, out, rows, MAX_ROWS: tl.constexpr):
+    offs = tl.arange(0, 256)
+    for row in range(0, MAX_ROWS):
+        if row < rows:
+            base = row * 3584
+            acc = 0.0
+            for k in range(0, 3584, 256):
+                x = tl.load(inp + base + k + offs).to(tl.float32)
+                acc += tl.sum(x, axis=0)
+            tl.store(out + row, (acc / 3584.0).to(out.dtype.element_ty))
+
+
 def _supported_fast_mean_dtype(inp_dtype, out_dtype):
     return inp_dtype in (
         torch.float16,
@@ -167,6 +190,17 @@ def _launch_mean_hot_rows128(inp_2d, out_1d, rows):
     )
 
 
+def _launch_mean_hot_rows3584(inp_2d, out_1d, rows):
+    _mean_lastdim_rows3584_hot_kernel[(1,)](
+        inp_2d,
+        out_1d,
+        rows,
+        MAX_ROWS=128,
+        num_warps=1,
+        num_stages=1,
+    )
+
+
 def _maybe_prewarm_mean_kernels():
     global _PREWARM_MEAN_DONE
     if _PREWARM_MEAN_DONE:
@@ -184,6 +218,19 @@ def _maybe_prewarm_mean_kernels():
         out128 = torch.empty((16,), dtype=torch.float32, device="cpu")
         _launch_mean_lastdim_fast(x128.view(16, 128), out128, 16, 128)
         _launch_mean_hot_rows128(x128.view(16, 128), out128, 16)
+
+        x3584 = torch.zeros((1, 1, 3584), dtype=torch.float32, device="cpu")
+        out3584 = torch.empty((1,), dtype=torch.float32, device="cpu")
+        _mean_lastdim_1x3584_hot_kernel[(1,)](
+            x3584.view(1, 3584),
+            out3584,
+            num_warps=1,
+            num_stages=1,
+        )
+
+        x_rows3584 = torch.zeros((1, 128, 3584), dtype=torch.float32, device="cpu")
+        out_rows3584 = torch.empty((128,), dtype=torch.float32, device="cpu")
+        _launch_mean_hot_rows3584(x_rows3584.view(128, 3584), out_rows3584, 128)
     except Exception:
         logging.debug("GEMS ARM mean prewarm failed", exc_info=True)
     _PREWARM_MEAN_DONE = True
@@ -277,9 +324,28 @@ def mean_dim(x, dim=None, keepdim=False, *, dtype=None):
             if not keepdim:
                 out = out.squeeze(-1)
             return out
+        if rows == 1 and cols == 3584:
+            out_flat = torch.empty((1,), dtype=dtype, device=x.device)
+            _mean_lastdim_1x3584_hot_kernel[(1,)](
+                x.view(1, 3584),
+                out_flat,
+                num_warps=1,
+                num_stages=1,
+            )
+            out = out_flat.view(*x.shape[:-1], 1)
+            if not keepdim:
+                out = out.squeeze(-1)
+            return out
         if cols == 128 and rows <= 16:
             out_flat = torch.empty((rows,), dtype=dtype, device=x.device)
             _launch_mean_hot_rows128(x.view(rows, 128), out_flat, rows)
+            out = out_flat.view(*x.shape[:-1], 1)
+            if not keepdim:
+                out = out.squeeze(-1)
+            return out
+        if cols == 3584 and rows <= 128:
+            out_flat = torch.empty((rows,), dtype=dtype, device=x.device)
+            _launch_mean_hot_rows3584(x.view(rows, 3584), out_flat, rows)
             out = out_flat.view(*x.shape[:-1], 1)
             if not keepdim:
                 out = out.squeeze(-1)

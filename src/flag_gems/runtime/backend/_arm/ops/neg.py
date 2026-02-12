@@ -80,6 +80,27 @@ def _neg_1024_hot_kernel(
         tl.store(out_ptr + base + offs, -x)
 
 
+@triton.jit
+def _neg_256_hot_kernel(
+    x_ptr,
+    out_ptr,
+):
+    offs = tl.arange(0, 256)
+    x = tl.load(x_ptr + offs)
+    tl.store(out_ptr + offs, -x)
+
+
+@triton.jit
+def _neg_1792_hot_kernel(
+    x_ptr,
+    out_ptr,
+):
+    offs = tl.arange(0, 256)
+    for base in range(0, 1792, 256):
+        x = tl.load(x_ptr + base + offs)
+        tl.store(out_ptr + base + offs, -x)
+
+
 @triton.jit(do_not_specialize=["rows"])
 def _neg_rows64_hot_kernel(
     x_ptr,
@@ -114,6 +135,30 @@ def _neg_rows64_16_hot_kernel(
 ):
     offs = tl.arange(0, 64)
     for row in range(0, 16):
+        base = row * 64
+        x = tl.load(x_ptr + base + offs)
+        tl.store(out_ptr + base + offs, -x)
+
+
+@triton.jit
+def _neg_rows64_4_hot_kernel(
+    x_ptr,
+    out_ptr,
+):
+    offs = tl.arange(0, 64)
+    for row in range(0, 4):
+        base = row * 64
+        x = tl.load(x_ptr + base + offs)
+        tl.store(out_ptr + base + offs, -x)
+
+
+@triton.jit
+def _neg_rows64_28_hot_kernel(
+    x_ptr,
+    out_ptr,
+):
+    offs = tl.arange(0, 64)
+    for row in range(0, 28):
         base = row * 64
         x = tl.load(x_ptr + base + offs)
         tl.store(out_ptr + base + offs, -x)
@@ -164,6 +209,22 @@ def _launch_neg_kernel(x, out, n_elements, block_size):
 
 
 def _maybe_launch_neg_hotshape(x_contig, out_contig):
+    if x_contig.numel() == 256:
+        _neg_256_hot_kernel[(1,)](
+            x_contig,
+            out_contig,
+            num_warps=1,
+            num_stages=1,
+        )
+        return True
+    if x_contig.numel() == 1792:
+        _neg_1792_hot_kernel[(1,)](
+            x_contig,
+            out_contig,
+            num_warps=1,
+            num_stages=1,
+        )
+        return True
     if x_contig.numel() == 512:
         _neg_512_hot_kernel[(1,)](
             x_contig,
@@ -199,8 +260,24 @@ def _maybe_launch_neg_hotshape(x_contig, out_contig):
             num_stages=1,
         )
         return True
+    if rows == 4:
+        _neg_rows64_4_hot_kernel[(1,)](
+            x_contig,
+            out_contig,
+            num_warps=1,
+            num_stages=1,
+        )
+        return True
     if rows == 16:
         _neg_rows64_16_hot_kernel[(1,)](
+            x_contig,
+            out_contig,
+            num_warps=1,
+            num_stages=1,
+        )
+        return True
+    if rows == 28:
+        _neg_rows64_28_hot_kernel[(1,)](
             x_contig,
             out_contig,
             num_warps=1,
@@ -262,6 +339,24 @@ def _maybe_prewarm_neg_kernels():
             out128 = torch.empty_like(x128)
             block128 = _select_block_size(x128.numel(), x128.dtype)
             _launch_neg_kernel(x128, out128, x128.numel(), block128)
+
+            x28x64 = torch.zeros((1, 28, 1, 64), dtype=dt, device="cpu")
+            out28x64 = torch.empty_like(x28x64)
+            _neg_rows64_28_hot_kernel[(1,)](
+                x28x64,
+                out28x64,
+                num_warps=1,
+                num_stages=1,
+            )
+
+            x4x64 = torch.zeros((1, 4, 1, 64), dtype=dt, device="cpu")
+            out4x64 = torch.empty_like(x4x64)
+            _neg_rows64_4_hot_kernel[(1,)](
+                x4x64,
+                out4x64,
+                num_warps=1,
+                num_stages=1,
+            )
     except Exception:
         logging.debug("GEMS ARM neg prewarm failed", exc_info=True)
     _PREWARM_NEG_DONE = True
