@@ -4,8 +4,7 @@ vendor_info = VendorInfoBase(
     vendor_name="arm", device_name="cpu", device_query_cmd="cat /proc/cpuinfo"
 )
 
-# Keep high-traffic CPU primitives on native PyTorch kernels for better end-to-end
-# generation throughput on Triton-CPU deployments.
+# Ops listed here are excluded from the ARM customized registry.
 CUSTOMIZED_UNUSED_OPS = (
     "all",
     "all_dim",
@@ -42,12 +41,8 @@ CUSTOMIZED_UNUSED_OPS = (
     "lt_scalar",
     "mul",
     "mul_",
-    "masked_fill",
-    "masked_fill_",
     "silu",
     "silu_",
-    "sub",
-    "sub_",
     "zero_",
 )
 

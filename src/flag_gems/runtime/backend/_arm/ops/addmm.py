@@ -81,36 +81,48 @@ def addmm(bias, mat1, mat2, *, beta=1, alpha=1):
     M, K = mat1.shape
     _, N = mat2.shape
 
-    mat1 = mat1.contiguous()
-    mat2 = mat2.contiguous()
-    out = torch.empty((M, N), device=mat1.device, dtype=mat1.dtype)
-    bias = bias.broadcast_to(out.shape)
+    if mat1.stride(0) > 1 and mat1.stride(1) > 1:
+        mat1 = mat1.contiguous()
+    if mat2.stride(0) > 1 and mat2.stride(1) > 1:
+        mat2 = mat2.contiguous()
+    out_shape = (M, N)
+    bias = bias.broadcast_to(out_shape)
 
-    grid = lambda META: (
-        triton.cdiv(M, META["BLOCK_SIZE_M"]),
-        triton.cdiv(N, META["BLOCK_SIZE_N"]),
-    )
-    # with torch_device_fn.device(mat1.device):
-    addmm_kernel[grid](
-        mat1,
-        mat2,
-        bias,
-        out,
-        alpha,
-        beta,
-        M,
-        N,
-        K,
-        mat1.stride(0),
-        mat1.stride(1),
-        mat2.stride(0),
-        mat2.stride(1),
-        bias.stride(0),
-        bias.stride(1),
-        out.stride(0),
-        out.stride(1),
-    )
-    return out
+    if mat1.dtype is torch.bfloat16 or mat2.dtype is torch.bfloat16 or bias.dtype is torch.bfloat16:
+        # Reuse arm mm + pointwise ops for bf16 to avoid addmm bf16 masked-load lowering failures.
+        out = torch.mm(mat1, mat2)
+        if alpha != 1:
+            out = out * alpha
+        if beta != 0:
+            out = out + bias if beta == 1 else out + bias * beta
+        return out
+    else:
+        out = torch.empty(out_shape, device=mat1.device, dtype=mat1.dtype)
+        grid = lambda META: (
+            triton.cdiv(M, META["BLOCK_SIZE_M"]),
+            triton.cdiv(N, META["BLOCK_SIZE_N"]),
+        )
+        # with torch_device_fn.device(mat1.device):
+        addmm_kernel[grid](
+            mat1,
+            mat2,
+            bias,
+            out,
+            alpha,
+            beta,
+            M,
+            N,
+            K,
+            mat1.stride(0),
+            mat1.stride(1),
+            mat2.stride(0),
+            mat2.stride(1),
+            bias.stride(0),
+            bias.stride(1),
+            out.stride(0),
+            out.stride(1),
+        )
+        return out
 
 
 def addmm_out(bias, mat1, mat2, *, beta=1, alpha=1, out=None):
@@ -126,31 +138,41 @@ def addmm_out(bias, mat1, mat2, *, beta=1, alpha=1, out=None):
 
     assert broadcastable_to(bias.shape, out.shape), "Incompatible input shape"
 
-    mat1 = mat1.contiguous()
-    mat2 = mat2.contiguous()
+    if mat1.stride(0) > 1 and mat1.stride(1) > 1:
+        mat1 = mat1.contiguous()
+    if mat2.stride(0) > 1 and mat2.stride(1) > 1:
+        mat2 = mat2.contiguous()
     bias = bias.broadcast_to(out.shape)
 
-    grid = lambda META: (
-        triton.cdiv(M, META["BLOCK_SIZE_M"]),
-        triton.cdiv(N, META["BLOCK_SIZE_N"]),
-    )
-    addmm_kernel[grid](
-        mat1,
-        mat2,
-        bias,
-        out,
-        alpha,
-        beta,
-        M,
-        N,
-        K,
-        mat1.stride(0),
-        mat1.stride(1),
-        mat2.stride(0),
-        mat2.stride(1),
-        bias.stride(0),
-        bias.stride(1),
-        out.stride(0),
-        out.stride(1),
-    )
+    if mat1.dtype is torch.bfloat16 or mat2.dtype is torch.bfloat16 or bias.dtype is torch.bfloat16:
+        mm_out = torch.mm(mat1, mat2)
+        if alpha != 1:
+            mm_out = mm_out * alpha
+        if beta != 0:
+            mm_out = mm_out + bias if beta == 1 else mm_out + bias * beta
+        out.copy_(mm_out.to(out.dtype))
+    else:
+        grid = lambda META: (
+            triton.cdiv(M, META["BLOCK_SIZE_M"]),
+            triton.cdiv(N, META["BLOCK_SIZE_N"]),
+        )
+        addmm_kernel[grid](
+            mat1,
+            mat2,
+            bias,
+            out,
+            alpha,
+            beta,
+            M,
+            N,
+            K,
+            mat1.stride(0),
+            mat1.stride(1),
+            mat2.stride(0),
+            mat2.stride(1),
+            bias.stride(0),
+            bias.stride(1),
+            out.stride(0),
+            out.stride(1),
+        )
     return out

@@ -10,6 +10,10 @@ from flag_gems.ops.rsqrt import rsqrt as base_rsqrt
 from flag_gems.ops.rsqrt import rsqrt_ as base_rsqrt_
 
 _PREWARM_RSQRT_DONE = False
+_RSQRT_ROWS1_HOT_ENABLED = os.environ.get("GEMS_ARM_RSQRT_ROWS1_HOT", "1") == "1"
+_RSQRT_TINY_HOT_ENABLED = os.environ.get("GEMS_ARM_RSQRT_TINY_HOT", "1") == "1"
+_RSQRT_PREWARM_ENABLED = os.environ.get("GEMS_ARM_RSQRT_PREWARM", "1") == "1"
+_RSQRT_DEBUG_ENABLED = os.environ.get("GEMS_DEBUG_RSQRT") == "1"
 
 
 @triton.jit
@@ -66,8 +70,40 @@ def _rsqrt_2048_hot_kernel(
         tl.store(out_ptr + base + offs, y.to(out_ptr.dtype.element_ty))
 
 
-@triton.jit(do_not_specialize=["rows"])
+@triton.jit
 def _rsqrt_rows1_hot_kernel(
+    x_ptr,
+    out_ptr,
+):
+    x = tl.load(x_ptr)
+    y = 1.0 / tl.sqrt(x.to(tl.float32))
+    tl.store(out_ptr, y.to(out_ptr.dtype.element_ty))
+
+
+@triton.jit
+def _rsqrt_rows8_hot_kernel(
+    x_ptr,
+    out_ptr,
+):
+    for row in range(0, 8):
+        x = tl.load(x_ptr + row)
+        y = 1.0 / tl.sqrt(x.to(tl.float32))
+        tl.store(out_ptr + row, y.to(out_ptr.dtype.element_ty))
+
+
+@triton.jit
+def _rsqrt_rows16_hot_kernel(
+    x_ptr,
+    out_ptr,
+):
+    for row in range(0, 16):
+        x = tl.load(x_ptr + row)
+        y = 1.0 / tl.sqrt(x.to(tl.float32))
+        tl.store(out_ptr + row, y.to(out_ptr.dtype.element_ty))
+
+
+@triton.jit(do_not_specialize=["rows"])
+def _rsqrt_rows_hot_kernel(
     x_ptr,
     out_ptr,
     rows,
@@ -157,9 +193,33 @@ def _maybe_launch_rsqrt_hotshape(x_contig, out_contig, n_elements):
             num_stages=1,
         )
         return True
-    if os.environ.get("GEMS_ARM_RSQRT_ROWS1_HOT", "1") == "1":
+    if _RSQRT_ROWS1_HOT_ENABLED:
         if x_contig.ndim > 0 and x_contig.shape[-1] == 1 and n_elements <= 256:
-            _rsqrt_rows1_hot_kernel[(1,)](
+            if n_elements == 1:
+                _rsqrt_rows1_hot_kernel[(1,)](
+                    x_contig,
+                    out_contig,
+                    num_warps=1,
+                    num_stages=1,
+                )
+                return True
+            if n_elements == 8:
+                _rsqrt_rows8_hot_kernel[(1,)](
+                    x_contig,
+                    out_contig,
+                    num_warps=1,
+                    num_stages=1,
+                )
+                return True
+            if n_elements == 16:
+                _rsqrt_rows16_hot_kernel[(1,)](
+                    x_contig,
+                    out_contig,
+                    num_warps=1,
+                    num_stages=1,
+                )
+                return True
+            _rsqrt_rows_hot_kernel[(1,)](
                 x_contig,
                 out_contig,
                 n_elements,
@@ -168,7 +228,7 @@ def _maybe_launch_rsqrt_hotshape(x_contig, out_contig, n_elements):
                 num_stages=1,
             )
             return True
-    if os.environ.get("GEMS_ARM_RSQRT_TINY_HOT", "1") == "1":
+    if _RSQRT_TINY_HOT_ENABLED:
         if n_elements <= 256:
             _rsqrt_tiny_flat_kernel[(1,)](
                 x_contig,
@@ -208,7 +268,7 @@ def _rsqrt_triton(x, out=None):
             out = torch.empty_like(x)
         out.fill_(val)
         return out
-    if os.environ.get("GEMS_DEBUG_RSQRT") == "1":
+    if _RSQRT_DEBUG_ENABLED:
         print(f"[GEMS_DEBUG_RSQRT] _rsqrt_triton: shape={tuple(x.shape)} dtype={x.dtype}")
     block_size = _select_block_size(n_elements, x.dtype)
     x_contig, out_contig, _ = _maybe_contiguous(x, out)
@@ -224,20 +284,58 @@ def _maybe_prewarm_rsqrt_kernels():
     global _PREWARM_RSQRT_DONE
     if _PREWARM_RSQRT_DONE:
         return
-    if os.environ.get("GEMS_ARM_RSQRT_PREWARM", "0") != "1":
+    if not _RSQRT_PREWARM_ENABLED:
         _PREWARM_RSQRT_DONE = True
         return
     try:
         for dt in (torch.float32, torch.bfloat16):
             x1024 = torch.ones((1, 1, 1024), dtype=dt, device="cpu")
             out1024 = torch.empty_like(x1024)
+            _rsqrt_1024_hot_kernel[(1,)](
+                x1024,
+                out1024,
+                num_warps=1,
+                num_stages=1,
+            )
+
+            x2048 = torch.ones((1, 16, 1, 128), dtype=dt, device="cpu")
+            out2048 = torch.empty_like(x2048)
+            _rsqrt_2048_hot_kernel[(1,)](
+                x2048,
+                out2048,
+                num_warps=1,
+                num_stages=1,
+            )
+
+            x1 = torch.ones((1, 1, 1), dtype=dt, device="cpu")
+            out1 = torch.empty_like(x1)
+            _rsqrt_rows1_hot_kernel[(1,)](
+                x1,
+                out1,
+                num_warps=1,
+                num_stages=1,
+            )
+
+            x8 = torch.ones((1, 1, 8, 1), dtype=dt, device="cpu")
+            out8 = torch.empty_like(x8)
+            _rsqrt_rows8_hot_kernel[(1,)](
+                x8,
+                out8,
+                num_warps=1,
+                num_stages=1,
+            )
+
+            x16 = torch.ones((1, 1, 16, 1), dtype=dt, device="cpu")
+            out16 = torch.empty_like(x16)
+            _rsqrt_rows16_hot_kernel[(1,)](
+                x16,
+                out16,
+                num_warps=1,
+                num_stages=1,
+            )
+
             block1024 = _select_block_size(x1024.numel(), x1024.dtype)
             _launch_rsqrt_kernel(x1024, out1024, x1024.numel(), block1024)
-
-            x128 = torch.ones((1, 16, 1, 128), dtype=dt, device="cpu")
-            out128 = torch.empty_like(x128)
-            block128 = _select_block_size(x128.numel(), x128.dtype)
-            _launch_rsqrt_kernel(x128, out128, x128.numel(), block128)
     except Exception:
         logging.debug("GEMS ARM rsqrt prewarm failed", exc_info=True)
     _PREWARM_RSQRT_DONE = True

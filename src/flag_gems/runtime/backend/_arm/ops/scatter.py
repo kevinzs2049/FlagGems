@@ -169,7 +169,6 @@ def generate_scatter_kernel(
                 code.writeline("block_stop = False")
                 code.writeline("while not block_stop:")
                 with code.indent():
-                    code.writeline
                     code.writeline(
                         "cur_inp = tl.load(out + inp_offsets, mask=mask, other=0)"
                     )
@@ -330,9 +329,8 @@ _scatter_func = ScatterFunction()
 def scatter(inp, dim, index, src, reduce=None):
     logger.debug("GEMS SCATTER")
     if reduce == "multiply":
-        # CPU Triton backend does not support atomic CAS on fp16/bf16 values.
-        return torch.scatter_reduce(
-            inp, dim, index, src, reduce="prod", include_self=True
+        raise RuntimeError(
+            "scatter(reduce='multiply') is not supported on ARM Triton CPU backend yet."
         )
 
     out = inp.clone()
@@ -371,10 +369,9 @@ def scatter(inp, dim, index, src, reduce=None):
 def scatter_(inp, dim, index, src, reduce=None):
     logger.debug("GEMS SCATTER_")
     if reduce == "multiply":
-        inp.copy_(
-            torch.scatter_reduce(inp, dim, index, src, reduce="prod", include_self=True)
+        raise RuntimeError(
+            "scatter_(reduce='multiply') is not supported on ARM Triton CPU backend yet."
         )
-        return inp
 
     out = inp
 

@@ -14,6 +14,7 @@ from flag_gems.utils import dim_compress
 from flag_gems.utils import triton_lang_extension as tle
 
 _PREWARM_MEAN_DONE = False
+_MEAN_PREWARM_ENABLED = os.environ.get("GEMS_ARM_MEAN_PREWARM", "1") == "1"
 
 
 # @libentry()
@@ -170,7 +171,7 @@ def _maybe_prewarm_mean_kernels():
     global _PREWARM_MEAN_DONE
     if _PREWARM_MEAN_DONE:
         return
-    if os.environ.get("GEMS_ARM_MEAN_PREWARM", "1") != "1":
+    if not _MEAN_PREWARM_ENABLED:
         _PREWARM_MEAN_DONE = True
         return
     try:

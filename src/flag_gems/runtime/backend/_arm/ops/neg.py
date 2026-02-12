@@ -17,6 +17,9 @@ _ARM_NEG_CONFIG = CodeGenConfig(
     prefer_1d_tile=True,
 )
 _PREWARM_NEG_DONE = False
+_NEG_ROWS64_HOT_ENABLED = os.environ.get("GEMS_ARM_NEG_ROWS64_HOT", "1") == "1"
+_NEG_PREWARM_ENABLED = os.environ.get("GEMS_ARM_NEG_PREWARM", "0") == "1"
+_NEG_DEBUG_ENABLED = os.environ.get("GEMS_DEBUG_NEG") == "1"
 
 
 @pointwise_dynamic(promotion_methods=[(0, "DEFAULT")], config=_ARM_NEG_CONFIG)
@@ -92,6 +95,30 @@ def _neg_rows64_hot_kernel(
             tl.store(out_ptr + base + offs, -x)
 
 
+@triton.jit
+def _neg_rows64_8_hot_kernel(
+    x_ptr,
+    out_ptr,
+):
+    offs = tl.arange(0, 64)
+    for row in range(0, 8):
+        base = row * 64
+        x = tl.load(x_ptr + base + offs)
+        tl.store(out_ptr + base + offs, -x)
+
+
+@triton.jit
+def _neg_rows64_16_hot_kernel(
+    x_ptr,
+    out_ptr,
+):
+    offs = tl.arange(0, 64)
+    for row in range(0, 16):
+        base = row * 64
+        x = tl.load(x_ptr + base + offs)
+        tl.store(out_ptr + base + offs, -x)
+
+
 def _select_block_size(n_elements, dtype):
     # Favor larger fixed tiles for tiny tensors to reduce launch overhead on CPU.
     if n_elements <= 32:
@@ -153,7 +180,7 @@ def _maybe_launch_neg_hotshape(x_contig, out_contig):
             num_stages=1,
         )
         return True
-    if os.environ.get("GEMS_ARM_NEG_ROWS64_HOT", "1") != "1":
+    if not _NEG_ROWS64_HOT_ENABLED:
         return False
     if x_contig.numel() == 0 or not x_contig.is_contiguous():
         return False
@@ -164,6 +191,22 @@ def _maybe_launch_neg_hotshape(x_contig, out_contig):
     rows = x_contig.numel() // 64
     if rows == 0 or rows > 128 or rows * 64 != x_contig.numel():
         return False
+    if rows == 8:
+        _neg_rows64_8_hot_kernel[(1,)](
+            x_contig,
+            out_contig,
+            num_warps=1,
+            num_stages=1,
+        )
+        return True
+    if rows == 16:
+        _neg_rows64_16_hot_kernel[(1,)](
+            x_contig,
+            out_contig,
+            num_warps=1,
+            num_stages=1,
+        )
+        return True
     _neg_rows64_hot_kernel[(1,)](
         x_contig,
         out_contig,
@@ -189,7 +232,7 @@ def _neg_triton_custom(x, out=None):
     n_elements = x.numel()
     if n_elements == 0:
         return x if out is None else out
-    if os.environ.get("GEMS_DEBUG_NEG") == "1":
+    if _NEG_DEBUG_ENABLED:
         print(f"[GEMS_DEBUG_NEG] _neg_triton_custom: shape={tuple(x.shape)} dtype={x.dtype}")
     block_size = _select_block_size(n_elements, x.dtype)
     x_contig, out_contig, _ = _maybe_contiguous(x, out)
@@ -205,7 +248,7 @@ def _maybe_prewarm_neg_kernels():
     global _PREWARM_NEG_DONE
     if _PREWARM_NEG_DONE:
         return
-    if os.environ.get("GEMS_ARM_NEG_PREWARM", "0") != "1":
+    if not _NEG_PREWARM_ENABLED:
         _PREWARM_NEG_DONE = True
         return
     try:
@@ -232,9 +275,6 @@ def _neg_dispatch_tensor(A, out=None):
             out = torch.empty_like(A)
         out.fill_(val)
         return out
-    # bfloat16 hits a Triton-CPU LLVM issue with the custom kernel; use pointwise_dynamic for it.
-    if A.dtype is torch.bfloat16:
-        return _neg_pointwise(A) if out is None else _neg_pointwise(A, out0=out)
     return _neg_triton_custom(A, out=out)
 
 

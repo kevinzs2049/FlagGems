@@ -12,6 +12,9 @@ from flag_gems.ops.pow import pow_tensor_tensor as base_pow_tensor_tensor
 from flag_gems.ops.pow import pow_tensor_tensor_ as base_pow_tensor_tensor_
 
 _PREWARM_POW_DONE = False
+_POW_SQUARE_HOT_ENABLED = os.environ.get("GEMS_ARM_POW_SQUARE_HOT", "1") == "1"
+_POW_TRITON_ENABLED = os.environ.get("GEMS_ARM_POW_TRITON", "1") == "1"
+_POW_PREWARM_ENABLED = os.environ.get("GEMS_ARM_POW_PREWARM", "1") == "1"
 
 
 @triton.jit
@@ -210,7 +213,7 @@ def _launch_pow_kernel(multi_kernel, single_kernel, x, out_tensor, n_elements, b
 
 
 def _maybe_launch_pow_square_hotshape(x, out_tensor, n_elements):
-    if os.environ.get("GEMS_ARM_POW_SQUARE_HOT", "1") != "1":
+    if not _POW_SQUARE_HOT_ENABLED:
         return False
     if not x.is_contiguous() or x.numel() == 0:
         return False
@@ -251,7 +254,7 @@ def _pow_tensor_scalar_special(x, exponent, out=None):
         return None
     if out is not None and not out.is_contiguous():
         return None
-    if os.environ.get("GEMS_ARM_POW_TRITON", "1") != "1":
+    if not _POW_TRITON_ENABLED:
         return None
 
     if exponent == 2.0:
@@ -299,13 +302,39 @@ def _maybe_prewarm_pow_kernels():
     global _PREWARM_POW_DONE
     if _PREWARM_POW_DONE:
         return
-    if os.environ.get("GEMS_ARM_POW_PREWARM", "0") != "1":
+    if not _POW_PREWARM_ENABLED:
         _PREWARM_POW_DONE = True
         return
     try:
         for dt in (torch.float32, torch.bfloat16):
             x1024 = torch.ones((1, 1, 1024), dtype=dt, device="cpu")
             out1024 = torch.empty_like(x1024)
+            _pow_square_1024_hot_kernel[(1,)](
+                x1024,
+                out1024,
+                num_warps=1,
+                num_stages=1,
+            )
+
+            x2048 = torch.ones((1, 16, 1, 128), dtype=dt, device="cpu")
+            out2048 = torch.empty_like(x2048)
+            _pow_square_2048_hot_kernel[(1,)](
+                x2048,
+                out2048,
+                num_warps=1,
+                num_stages=1,
+            )
+
+            rows = x2048.numel() // 128
+            _pow_square_rows128_hot_kernel[(1,)](
+                x2048,
+                out2048,
+                rows,
+                MAX_ROWS=96,
+                num_warps=1,
+                num_stages=1,
+            )
+
             block1024 = _select_block_size(x1024.numel(), x1024.dtype)
             _launch_pow_kernel(
                 _pow_square_kernel,
@@ -314,18 +343,6 @@ def _maybe_prewarm_pow_kernels():
                 out1024,
                 x1024.numel(),
                 block1024,
-            )
-
-            x128 = torch.ones((1, 16, 1, 128), dtype=dt, device="cpu")
-            out128 = torch.empty_like(x128)
-            block128 = _select_block_size(x128.numel(), x128.dtype)
-            _launch_pow_kernel(
-                _pow_square_kernel,
-                _pow_square_single_program_kernel,
-                x128,
-                out128,
-                x128.numel(),
-                block128,
             )
     except Exception:
         logging.debug("GEMS ARM pow prewarm failed", exc_info=True)

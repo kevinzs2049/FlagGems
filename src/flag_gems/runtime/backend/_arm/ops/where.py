@@ -16,6 +16,175 @@ def where_inner(condition, self, other):
     return tl.where(condition, self, other)
 
 
+@triton.jit(do_not_specialize=["scalar", "n_elements"])
+def _where_scalar_self_kernel(
+    condition_ptr,
+    other_ptr,
+    out_ptr,
+    scalar,
+    n_elements,
+    BLOCK_SIZE: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = offs < n_elements
+    cond = tl.load(condition_ptr + offs, mask=mask, other=0).to(tl.int1)
+    other = tl.load(other_ptr + offs, mask=mask, other=0.0)
+    out = tl.where(cond, scalar, other)
+    tl.store(out_ptr + offs, out, mask=mask)
+
+
+@triton.jit(do_not_specialize=["scalar", "n_elements"])
+def _where_scalar_other_kernel(
+    condition_ptr,
+    self_ptr,
+    out_ptr,
+    scalar,
+    n_elements,
+    BLOCK_SIZE: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = offs < n_elements
+    cond = tl.load(condition_ptr + offs, mask=mask, other=0).to(tl.int1)
+    self_tensor = tl.load(self_ptr + offs, mask=mask, other=0.0)
+    out = tl.where(cond, self_tensor, scalar)
+    tl.store(out_ptr + offs, out, mask=mask)
+
+
+@triton.jit(do_not_specialize=["scalar", "n_elements"])
+def _where_scalar_self_single_program_kernel(
+    condition_ptr,
+    other_ptr,
+    out_ptr,
+    scalar,
+    n_elements,
+    BLOCK_SIZE: tl.constexpr,
+):
+    offs = tl.arange(0, BLOCK_SIZE)
+    for base in range(0, n_elements, BLOCK_SIZE):
+        idx = base + offs
+        mask = idx < n_elements
+        cond = tl.load(condition_ptr + idx, mask=mask, other=0).to(tl.int1)
+        other = tl.load(other_ptr + idx, mask=mask, other=0.0)
+        out = tl.where(cond, scalar, other)
+        tl.store(out_ptr + idx, out, mask=mask)
+
+
+@triton.jit(do_not_specialize=["scalar", "n_elements"])
+def _where_scalar_other_single_program_kernel(
+    condition_ptr,
+    self_ptr,
+    out_ptr,
+    scalar,
+    n_elements,
+    BLOCK_SIZE: tl.constexpr,
+):
+    offs = tl.arange(0, BLOCK_SIZE)
+    for base in range(0, n_elements, BLOCK_SIZE):
+        idx = base + offs
+        mask = idx < n_elements
+        cond = tl.load(condition_ptr + idx, mask=mask, other=0).to(tl.int1)
+        self_tensor = tl.load(self_ptr + idx, mask=mask, other=0.0)
+        out = tl.where(cond, self_tensor, scalar)
+        tl.store(out_ptr + idx, out, mask=mask)
+
+
+def _as_scalar(v):
+    if isinstance(v, torch.Tensor):
+        if v.numel() != 1:
+            return None
+        return v.item()
+    if isinstance(v, (int, float, bool)):
+        return v
+    return None
+
+
+def _where_scalar_tensor_fastpath(condition, self, other, out):
+    if not isinstance(condition, torch.Tensor) or condition.dtype is not torch.bool:
+        return False
+    if condition.device.type != "cpu":
+        return False
+    if not condition.is_contiguous() or not out.is_contiguous():
+        return False
+
+    self_scalar = _as_scalar(self)
+    other_scalar = _as_scalar(other)
+    self_tensor = self if isinstance(self, torch.Tensor) else None
+    other_tensor = other if isinstance(other, torch.Tensor) else None
+
+    # Only specialize one-scalar + one-tensor, contiguous, same flattened size.
+    if self_scalar is not None and other_tensor is not None and other_tensor.is_contiguous():
+        if other_tensor.numel() != condition.numel():
+            return False
+        if other_tensor.dtype != out.dtype:
+            return False
+        cond_flat = condition.view(-1)
+        other_flat = other_tensor.view(-1)
+        out_flat = out.view(-1)
+        n = cond_flat.numel()
+        if n <= 262144:
+            _where_scalar_self_single_program_kernel[(1,)](
+                cond_flat,
+                other_flat,
+                out_flat,
+                float(self_scalar),
+                n,
+                BLOCK_SIZE=256,
+                num_warps=1,
+                num_stages=1,
+            )
+        else:
+            grid = (triton.cdiv(n, 256),)
+            _where_scalar_self_kernel[grid](
+                cond_flat,
+                other_flat,
+                out_flat,
+                float(self_scalar),
+                n,
+                BLOCK_SIZE=256,
+                num_warps=1,
+                num_stages=1,
+            )
+        return True
+
+    if other_scalar is not None and self_tensor is not None and self_tensor.is_contiguous():
+        if self_tensor.numel() != condition.numel():
+            return False
+        if self_tensor.dtype != out.dtype:
+            return False
+        cond_flat = condition.view(-1)
+        self_flat = self_tensor.view(-1)
+        out_flat = out.view(-1)
+        n = cond_flat.numel()
+        if n <= 262144:
+            _where_scalar_other_single_program_kernel[(1,)](
+                cond_flat,
+                self_flat,
+                out_flat,
+                float(other_scalar),
+                n,
+                BLOCK_SIZE=256,
+                num_warps=1,
+                num_stages=1,
+            )
+        else:
+            grid = (triton.cdiv(n, 256),)
+            _where_scalar_other_kernel[grid](
+                cond_flat,
+                self_flat,
+                out_flat,
+                float(other_scalar),
+                n,
+                BLOCK_SIZE=256,
+                num_warps=1,
+                num_stages=1,
+            )
+        return True
+
+    return False
+
+
 def where_self_out(condition, self, other, out=None):
     logging.debug("GEMS WHERE_SELF_OUT")
     result_type = torch.result_type(self, other)
@@ -59,6 +228,9 @@ def where_self_out(condition, self, other, out=None):
     if out is None:
         out_shape = torch.broadcast_shapes(c.shape, a.shape, b.shape)
         out = torch.empty(out_shape, dtype=result_type, device=c.device)
+
+    if _where_scalar_tensor_fastpath(c, a, b, out):
+        return out
 
     ndim = max(c.ndim, a.ndim, b.ndim)
     where_inner.instantiate(ndim)

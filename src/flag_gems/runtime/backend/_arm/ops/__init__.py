@@ -37,6 +37,13 @@ from .multinomial import multinomial
 from .neg import neg, neg_
 from .ones import ones
 from .ones_like import ones_like
+from .pow import (
+    pow_scalar,
+    pow_tensor_scalar,
+    pow_tensor_scalar_,
+    pow_tensor_tensor,
+    pow_tensor_tensor_,
+)
 from .quantile import quantile
 from .rsqrt import rsqrt, rsqrt_
 from .scatter import scatter
@@ -88,6 +95,11 @@ __all__ = [
     "neg_",
     "ones",
     "ones_like",
+    "pow_scalar",
+    "pow_tensor_scalar",
+    "pow_tensor_scalar_",
+    "pow_tensor_tensor",
+    "pow_tensor_tensor_",
     "quantile",
     "remainder",
     "remainder_",
