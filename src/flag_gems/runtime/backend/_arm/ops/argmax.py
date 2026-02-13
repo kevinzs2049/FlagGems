@@ -120,6 +120,13 @@ def argmax(inp, dim=None, keepdim=False, *, dtype=None):
         assert dim >= -inp.ndim and dim < inp.ndim, "Invalid dim"
         shape = inp.shape
         dim = dim % inp.ndim
+        if inp.numel() == 0:
+            out_shape = list(shape)
+            if keepdim:
+                out_shape[dim] = 1
+            else:
+                del out_shape[dim]
+            return torch.zeros(out_shape, dtype=torch.int64, device=inp.device)
         N = shape[dim]
         M = math.prod(shape[:dim])
         K = inp.numel() // M // N
@@ -131,6 +138,31 @@ def argmax(inp, dim=None, keepdim=False, *, dtype=None):
         out_index = torch.empty(shape_list, dtype=torch.int64, device=inp.device)
         if not keepdim:
             out_index = torch.squeeze(out_index, dim)
+
+        # Decode-heavy path frequently reduces a single row over vocab; use
+        # a two-stage reduction to parallelize across N and reduce launch cost.
+        if M == 1 and K == 1:
+            block_size = triton.next_power_of_2(math.ceil(math.sqrt(N)))
+            mid_size = triton.cdiv(N, block_size)
+            block_mid = triton.next_power_of_2(mid_size)
+            mid_value = torch.empty((mid_size,), dtype=inp.dtype, device=inp.device)
+            mid_index = torch.empty((mid_size,), dtype=torch.int64, device=inp.device)
+            flat_out = out_index.reshape(-1)
+            argmax_kernel_1[(mid_size, 1, 1)](
+                inp.reshape(-1),
+                mid_value,
+                mid_index,
+                N,
+                block_size,
+            )
+            argmax_kernel_2[(1, 1, 1)](
+                mid_value,
+                mid_index,
+                flat_out,
+                mid_size,
+                block_mid,
+            )
+            return out_index
 
         grid = lambda meta: (
             triton.cdiv(M, meta["BLOCK_M"]),
