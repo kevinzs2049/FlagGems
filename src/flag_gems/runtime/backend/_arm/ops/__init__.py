@@ -25,6 +25,7 @@ from .full import full
 from .gather import gather
 from .gelu import gelu
 from .index_select import index_select
+from .index import index
 from .isin import isin
 from .log_softmax import log_softmax
 from .lt import lt
@@ -80,6 +81,7 @@ __all__ = [
     "gather",
     "gelu",
     "index_select",
+    "index",
     "isin",
     "log_softmax",
     "lt",
