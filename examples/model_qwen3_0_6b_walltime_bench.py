@@ -17,6 +17,10 @@ except ModuleNotFoundError:
         enable_linear_m1_fastpath_for_run,
         linear_m1_fastpath,
     )
+try:
+    from examples.qwen_rmsnorm_patch import enable_qwen_rmsnorm_triton_patch
+except ModuleNotFoundError:
+    from qwen_rmsnorm_patch import enable_qwen_rmsnorm_triton_patch  # type: ignore
 
 
 MODEL_PATH = os.getenv(
@@ -30,6 +34,7 @@ WARMUP = int(os.getenv("QWEN3_BENCH_WARMUP", "1"))
 ALTERNATE_ORDER = os.getenv("QWEN3_BENCH_ALTERNATE", "1") == "1"
 LINEAR_M1_FASTPATH = os.getenv("QWEN3_LINEAR_M1_FASTPATH", "0") == "1"
 LINEAR_M1_FASTPATH_SCOPE = os.getenv("QWEN3_LINEAR_M1_FASTPATH_SCOPE", "gems")
+RMSNORM_TRITON_PATCH = os.getenv("QWEN3_RMSNORM_TRITON_PATCH", "0") == "1"
 DEVICE = "cpu"
 
 
@@ -90,8 +95,13 @@ def main():
         f"[walltime] model={MODEL_PATH} prompt={PROMPT!r} max_new_tokens={MAX_NEW_TOKENS} "
         f"num_beams={NUM_BEAMS} repeats={REPEATS} warmup={WARMUP} "
         f"alternate_order={ALTERNATE_ORDER} linear_m1_fastpath={LINEAR_M1_FASTPATH} "
-        f"linear_m1_scope={LINEAR_M1_FASTPATH_SCOPE}"
+        f"linear_m1_scope={LINEAR_M1_FASTPATH_SCOPE} "
+        f"rmsnorm_triton_patch={RMSNORM_TRITON_PATCH}"
     )
+
+    if RMSNORM_TRITON_PATCH:
+        patched = enable_qwen_rmsnorm_triton_patch()
+        print(f"[walltime][rmsnorm-triton-patch] patched_classes={patched}")
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
     model = AutoModelForCausalLM.from_pretrained(MODEL_PATH).to(DEVICE).eval()

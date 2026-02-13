@@ -16,6 +16,10 @@ except ModuleNotFoundError:
         enable_linear_m1_fastpath_for_run,
         linear_m1_fastpath,
     )
+try:
+    from examples.qwen_rmsnorm_patch import enable_qwen_rmsnorm_triton_patch
+except ModuleNotFoundError:
+    from qwen_rmsnorm_patch import enable_qwen_rmsnorm_triton_patch  # type: ignore
 
 device = "cpu"
 MODEL_PATH = os.getenv(
@@ -28,6 +32,11 @@ PROFILE_TOPK = int(os.getenv("QWEN3_PROFILE_TOPK", "12"))
 PROFILE_GAP_TOPK = int(os.getenv("QWEN3_PROFILE_GAP_TOPK", "20"))
 LINEAR_M1_FASTPATH = os.getenv("QWEN3_LINEAR_M1_FASTPATH", "0") == "1"
 LINEAR_M1_FASTPATH_SCOPE = os.getenv("QWEN3_LINEAR_M1_FASTPATH_SCOPE", "gems")
+RMSNORM_TRITON_PATCH = os.getenv("QWEN3_RMSNORM_TRITON_PATCH", "0") == "1"
+
+if RMSNORM_TRITON_PATCH:
+    patched = enable_qwen_rmsnorm_triton_patch()
+    print(f"[qwen3][rmsnorm-triton-patch] patched_classes={patched}")
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 model = AutoModelForCausalLM.from_pretrained(MODEL_PATH)

@@ -722,14 +722,7 @@ def add(A, B, *, alpha=1):
             if not _use_triton_scalar(A.numel()):
                 return _base_add(A, scalar, alpha=alpha)
             return _add_tensor_scalar_triton(A, scalar, alpha)
-        # For decode-size tensors, normalize layout and stay on Triton path.
-        if (
-            A.shape == B.shape
-            and A.device.type == "cpu"
-            and B.device == A.device
-            and A.dtype == B.dtype
-            and A.numel() <= 8192
-        ):
+        if A.shape == B.shape and A.is_contiguous() and B.is_contiguous():
             return _add_tensor_tensor_triton(A, B, alpha)
         if _use_triton(A.numel()) and _is_broadcast_lastdim(A, B):
             return _add_tensor_tensor_triton(A, B, alpha)
