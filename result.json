@@ -1,16 +1,16 @@
 {
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg[dtype0-shape0]": {
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype0-shape0]": {
         "params": {
             "dtype": "torch.float16",
             "shape": []
         },
         "result": "passed",
         "opname": [
-            "neg"
+            "to_copy"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg[dtype0-shape1]": {
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype0-shape1]": {
         "params": {
             "dtype": "torch.float16",
             "shape": [
@@ -19,11 +19,11 @@
         },
         "result": "passed",
         "opname": [
-            "neg"
+            "to_copy"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg[dtype0-shape2]": {
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype0-shape2]": {
         "params": {
             "dtype": "torch.float16",
             "shape": [
@@ -33,11 +33,11 @@
         },
         "result": "passed",
         "opname": [
-            "neg"
+            "to_copy"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg[dtype0-shape3]": {
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype0-shape3]": {
         "params": {
             "dtype": "torch.float16",
             "shape": [
@@ -48,11 +48,11 @@
         },
         "result": "passed",
         "opname": [
-            "neg"
+            "to_copy"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg[dtype0-shape4]": {
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype0-shape4]": {
         "params": {
             "dtype": "torch.float16",
             "shape": [
@@ -64,11 +64,11 @@
         },
         "result": "passed",
         "opname": [
-            "neg"
+            "to_copy"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg[dtype0-shape5]": {
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype0-shape5]": {
         "params": {
             "dtype": "torch.float16",
             "shape": [
@@ -81,22 +81,22 @@
         },
         "result": "passed",
         "opname": [
-            "neg"
+            "to_copy"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg[dtype1-shape0]": {
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype1-shape0]": {
         "params": {
             "dtype": "torch.float32",
             "shape": []
         },
         "result": "passed",
         "opname": [
-            "neg"
+            "to_copy"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg[dtype1-shape1]": {
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype1-shape1]": {
         "params": {
             "dtype": "torch.float32",
             "shape": [
@@ -105,11 +105,11 @@
         },
         "result": "passed",
         "opname": [
-            "neg"
+            "to_copy"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg[dtype1-shape2]": {
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype1-shape2]": {
         "params": {
             "dtype": "torch.float32",
             "shape": [
@@ -119,11 +119,11 @@
         },
         "result": "passed",
         "opname": [
-            "neg"
+            "to_copy"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg[dtype1-shape3]": {
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype1-shape3]": {
         "params": {
             "dtype": "torch.float32",
             "shape": [
@@ -134,11 +134,11 @@
         },
         "result": "passed",
         "opname": [
-            "neg"
+            "to_copy"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg[dtype1-shape4]": {
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype1-shape4]": {
         "params": {
             "dtype": "torch.float32",
             "shape": [
@@ -150,11 +150,11 @@
         },
         "result": "passed",
         "opname": [
-            "neg"
+            "to_copy"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg[dtype1-shape5]": {
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype1-shape5]": {
         "params": {
             "dtype": "torch.float32",
             "shape": [
@@ -167,22 +167,22 @@
         },
         "result": "passed",
         "opname": [
-            "neg"
+            "to_copy"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg[dtype2-shape0]": {
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype2-shape0]": {
         "params": {
             "dtype": "torch.bfloat16",
             "shape": []
         },
         "result": "passed",
         "opname": [
-            "neg"
+            "to_copy"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg[dtype2-shape1]": {
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype2-shape1]": {
         "params": {
             "dtype": "torch.bfloat16",
             "shape": [
@@ -191,11 +191,11 @@
         },
         "result": "passed",
         "opname": [
-            "neg"
+            "to_copy"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg[dtype2-shape2]": {
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype2-shape2]": {
         "params": {
             "dtype": "torch.bfloat16",
             "shape": [
@@ -205,11 +205,11 @@
         },
         "result": "passed",
         "opname": [
-            "neg"
+            "to_copy"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg[dtype2-shape3]": {
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype2-shape3]": {
         "params": {
             "dtype": "torch.bfloat16",
             "shape": [
@@ -220,11 +220,11 @@
         },
         "result": "passed",
         "opname": [
-            "neg"
+            "to_copy"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg[dtype2-shape4]": {
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype2-shape4]": {
         "params": {
             "dtype": "torch.bfloat16",
             "shape": [
@@ -236,11 +236,11 @@
         },
         "result": "passed",
         "opname": [
-            "neg"
+            "to_copy"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg[dtype2-shape5]": {
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype2-shape5]": {
         "params": {
             "dtype": "torch.bfloat16",
             "shape": [
@@ -253,22 +253,730 @@
         },
         "result": "passed",
         "opname": [
-            "neg"
+            "to_copy"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg_[dtype0-shape0]": {
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype3-shape0]": {
+        "params": {
+            "dtype": "torch.float64",
+            "shape": []
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype3-shape1]": {
+        "params": {
+            "dtype": "torch.float64",
+            "shape": [
+                1
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype3-shape2]": {
+        "params": {
+            "dtype": "torch.float64",
+            "shape": [
+                1024,
+                1024
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype3-shape3]": {
+        "params": {
+            "dtype": "torch.float64",
+            "shape": [
+                20,
+                320,
+                15
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype3-shape4]": {
+        "params": {
+            "dtype": "torch.float64",
+            "shape": [
+                16,
+                128,
+                64,
+                60
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype3-shape5]": {
+        "params": {
+            "dtype": "torch.float64",
+            "shape": [
+                16,
+                7,
+                57,
+                32,
+                29
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype4-shape0]": {
+        "params": {
+            "dtype": "torch.int16",
+            "shape": []
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype4-shape1]": {
+        "params": {
+            "dtype": "torch.int16",
+            "shape": [
+                1
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype4-shape2]": {
+        "params": {
+            "dtype": "torch.int16",
+            "shape": [
+                1024,
+                1024
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype4-shape3]": {
+        "params": {
+            "dtype": "torch.int16",
+            "shape": [
+                20,
+                320,
+                15
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype4-shape4]": {
+        "params": {
+            "dtype": "torch.int16",
+            "shape": [
+                16,
+                128,
+                64,
+                60
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype4-shape5]": {
+        "params": {
+            "dtype": "torch.int16",
+            "shape": [
+                16,
+                7,
+                57,
+                32,
+                29
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype5-shape0]": {
+        "params": {
+            "dtype": "torch.int32",
+            "shape": []
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype5-shape1]": {
+        "params": {
+            "dtype": "torch.int32",
+            "shape": [
+                1
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype5-shape2]": {
+        "params": {
+            "dtype": "torch.int32",
+            "shape": [
+                1024,
+                1024
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype5-shape3]": {
+        "params": {
+            "dtype": "torch.int32",
+            "shape": [
+                20,
+                320,
+                15
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype5-shape4]": {
+        "params": {
+            "dtype": "torch.int32",
+            "shape": [
+                16,
+                128,
+                64,
+                60
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype5-shape5]": {
+        "params": {
+            "dtype": "torch.int32",
+            "shape": [
+                16,
+                7,
+                57,
+                32,
+                29
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype6-shape0]": {
+        "params": {
+            "dtype": "torch.int64",
+            "shape": []
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype6-shape1]": {
+        "params": {
+            "dtype": "torch.int64",
+            "shape": [
+                1
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype6-shape2]": {
+        "params": {
+            "dtype": "torch.int64",
+            "shape": [
+                1024,
+                1024
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype6-shape3]": {
+        "params": {
+            "dtype": "torch.int64",
+            "shape": [
+                20,
+                320,
+                15
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype6-shape4]": {
+        "params": {
+            "dtype": "torch.int64",
+            "shape": [
+                16,
+                128,
+                64,
+                60
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_dtype[dtype6-shape5]": {
+        "params": {
+            "dtype": "torch.int64",
+            "shape": [
+                16,
+                7,
+                57,
+                32,
+                29
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_copy_dtype_cast[target_dtype0-shape0]": {
+        "params": {
+            "target_dtype": "torch.float16",
+            "shape": []
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_copy_dtype_cast[target_dtype0-shape1]": {
+        "params": {
+            "target_dtype": "torch.float16",
+            "shape": [
+                1
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_copy_dtype_cast[target_dtype0-shape2]": {
+        "params": {
+            "target_dtype": "torch.float16",
+            "shape": [
+                1024,
+                1024
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_copy_dtype_cast[target_dtype0-shape3]": {
+        "params": {
+            "target_dtype": "torch.float16",
+            "shape": [
+                20,
+                320,
+                15
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_copy_dtype_cast[target_dtype0-shape4]": {
+        "params": {
+            "target_dtype": "torch.float16",
+            "shape": [
+                16,
+                128,
+                64,
+                60
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_copy_dtype_cast[target_dtype0-shape5]": {
+        "params": {
+            "target_dtype": "torch.float16",
+            "shape": [
+                16,
+                7,
+                57,
+                32,
+                29
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_copy_dtype_cast[target_dtype1-shape0]": {
+        "params": {
+            "target_dtype": "torch.float32",
+            "shape": []
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_copy_dtype_cast[target_dtype1-shape1]": {
+        "params": {
+            "target_dtype": "torch.float32",
+            "shape": [
+                1
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_copy_dtype_cast[target_dtype1-shape2]": {
+        "params": {
+            "target_dtype": "torch.float32",
+            "shape": [
+                1024,
+                1024
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_copy_dtype_cast[target_dtype1-shape3]": {
+        "params": {
+            "target_dtype": "torch.float32",
+            "shape": [
+                20,
+                320,
+                15
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_copy_dtype_cast[target_dtype1-shape4]": {
+        "params": {
+            "target_dtype": "torch.float32",
+            "shape": [
+                16,
+                128,
+                64,
+                60
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_copy_dtype_cast[target_dtype1-shape5]": {
+        "params": {
+            "target_dtype": "torch.float32",
+            "shape": [
+                16,
+                7,
+                57,
+                32,
+                29
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_copy_dtype_cast[target_dtype2-shape0]": {
+        "params": {
+            "target_dtype": "torch.bfloat16",
+            "shape": []
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_copy_dtype_cast[target_dtype2-shape1]": {
+        "params": {
+            "target_dtype": "torch.bfloat16",
+            "shape": [
+                1
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_copy_dtype_cast[target_dtype2-shape2]": {
+        "params": {
+            "target_dtype": "torch.bfloat16",
+            "shape": [
+                1024,
+                1024
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_copy_dtype_cast[target_dtype2-shape3]": {
+        "params": {
+            "target_dtype": "torch.bfloat16",
+            "shape": [
+                20,
+                320,
+                15
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_copy_dtype_cast[target_dtype2-shape4]": {
+        "params": {
+            "target_dtype": "torch.bfloat16",
+            "shape": [
+                16,
+                128,
+                64,
+                60
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_copy_dtype_cast[target_dtype2-shape5]": {
+        "params": {
+            "target_dtype": "torch.bfloat16",
+            "shape": [
+                16,
+                7,
+                57,
+                32,
+                29
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_copy_dtype_cast[target_dtype3-shape0]": {
+        "params": {
+            "target_dtype": "torch.float64",
+            "shape": []
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_copy_dtype_cast[target_dtype3-shape1]": {
+        "params": {
+            "target_dtype": "torch.float64",
+            "shape": [
+                1
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_copy_dtype_cast[target_dtype3-shape2]": {
+        "params": {
+            "target_dtype": "torch.float64",
+            "shape": [
+                1024,
+                1024
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_copy_dtype_cast[target_dtype3-shape3]": {
+        "params": {
+            "target_dtype": "torch.float64",
+            "shape": [
+                20,
+                320,
+                15
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_copy_dtype_cast[target_dtype3-shape4]": {
+        "params": {
+            "target_dtype": "torch.float64",
+            "shape": [
+                16,
+                128,
+                64,
+                60
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_copy_dtype_cast[target_dtype3-shape5]": {
+        "params": {
+            "target_dtype": "torch.float64",
+            "shape": [
+                16,
+                7,
+                57,
+                32,
+                29
+            ]
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_copy_preserve_strides[memory_format0]": {
+        "params": {
+            "memory_format": "torch.preserve_format"
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_accuracy_to_copy_preserve_strides[memory_format1]": {
+        "params": {
+            "memory_format": "torch.contiguous_format"
+        },
+        "result": "passed",
+        "opname": [
+            "to_copy"
+        ],
+        "skipped_reason": null
+    },
+    "tests/test_unary_pointwise_ops.py::test_copy_inplace_same_dtype[dtype0-shape0]": {
         "params": {
             "dtype": "torch.float16",
             "shape": []
         },
         "result": "passed",
         "opname": [
-            "neg_"
+            "copy_"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg_[dtype0-shape1]": {
+    "tests/test_unary_pointwise_ops.py::test_copy_inplace_same_dtype[dtype0-shape1]": {
         "params": {
             "dtype": "torch.float16",
             "shape": [
@@ -277,11 +985,11 @@
         },
         "result": "passed",
         "opname": [
-            "neg_"
+            "copy_"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg_[dtype0-shape2]": {
+    "tests/test_unary_pointwise_ops.py::test_copy_inplace_same_dtype[dtype0-shape2]": {
         "params": {
             "dtype": "torch.float16",
             "shape": [
@@ -291,11 +999,11 @@
         },
         "result": "passed",
         "opname": [
-            "neg_"
+            "copy_"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg_[dtype0-shape3]": {
+    "tests/test_unary_pointwise_ops.py::test_copy_inplace_same_dtype[dtype0-shape3]": {
         "params": {
             "dtype": "torch.float16",
             "shape": [
@@ -306,11 +1014,11 @@
         },
         "result": "passed",
         "opname": [
-            "neg_"
+            "copy_"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg_[dtype0-shape4]": {
+    "tests/test_unary_pointwise_ops.py::test_copy_inplace_same_dtype[dtype0-shape4]": {
         "params": {
             "dtype": "torch.float16",
             "shape": [
@@ -322,11 +1030,11 @@
         },
         "result": "passed",
         "opname": [
-            "neg_"
+            "copy_"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg_[dtype0-shape5]": {
+    "tests/test_unary_pointwise_ops.py::test_copy_inplace_same_dtype[dtype0-shape5]": {
         "params": {
             "dtype": "torch.float16",
             "shape": [
@@ -339,22 +1047,22 @@
         },
         "result": "passed",
         "opname": [
-            "neg_"
+            "copy_"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg_[dtype1-shape0]": {
+    "tests/test_unary_pointwise_ops.py::test_copy_inplace_same_dtype[dtype1-shape0]": {
         "params": {
             "dtype": "torch.float32",
             "shape": []
         },
         "result": "passed",
         "opname": [
-            "neg_"
+            "copy_"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg_[dtype1-shape1]": {
+    "tests/test_unary_pointwise_ops.py::test_copy_inplace_same_dtype[dtype1-shape1]": {
         "params": {
             "dtype": "torch.float32",
             "shape": [
@@ -363,11 +1071,11 @@
         },
         "result": "passed",
         "opname": [
-            "neg_"
+            "copy_"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg_[dtype1-shape2]": {
+    "tests/test_unary_pointwise_ops.py::test_copy_inplace_same_dtype[dtype1-shape2]": {
         "params": {
             "dtype": "torch.float32",
             "shape": [
@@ -377,11 +1085,11 @@
         },
         "result": "passed",
         "opname": [
-            "neg_"
+            "copy_"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg_[dtype1-shape3]": {
+    "tests/test_unary_pointwise_ops.py::test_copy_inplace_same_dtype[dtype1-shape3]": {
         "params": {
             "dtype": "torch.float32",
             "shape": [
@@ -392,11 +1100,11 @@
         },
         "result": "passed",
         "opname": [
-            "neg_"
+            "copy_"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg_[dtype1-shape4]": {
+    "tests/test_unary_pointwise_ops.py::test_copy_inplace_same_dtype[dtype1-shape4]": {
         "params": {
             "dtype": "torch.float32",
             "shape": [
@@ -408,11 +1116,11 @@
         },
         "result": "passed",
         "opname": [
-            "neg_"
+            "copy_"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg_[dtype1-shape5]": {
+    "tests/test_unary_pointwise_ops.py::test_copy_inplace_same_dtype[dtype1-shape5]": {
         "params": {
             "dtype": "torch.float32",
             "shape": [
@@ -425,22 +1133,22 @@
         },
         "result": "passed",
         "opname": [
-            "neg_"
+            "copy_"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg_[dtype2-shape0]": {
+    "tests/test_unary_pointwise_ops.py::test_copy_inplace_same_dtype[dtype2-shape0]": {
         "params": {
             "dtype": "torch.bfloat16",
             "shape": []
         },
         "result": "passed",
         "opname": [
-            "neg_"
+            "copy_"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg_[dtype2-shape1]": {
+    "tests/test_unary_pointwise_ops.py::test_copy_inplace_same_dtype[dtype2-shape1]": {
         "params": {
             "dtype": "torch.bfloat16",
             "shape": [
@@ -449,11 +1157,11 @@
         },
         "result": "passed",
         "opname": [
-            "neg_"
+            "copy_"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg_[dtype2-shape2]": {
+    "tests/test_unary_pointwise_ops.py::test_copy_inplace_same_dtype[dtype2-shape2]": {
         "params": {
             "dtype": "torch.bfloat16",
             "shape": [
@@ -463,11 +1171,11 @@
         },
         "result": "passed",
         "opname": [
-            "neg_"
+            "copy_"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg_[dtype2-shape3]": {
+    "tests/test_unary_pointwise_ops.py::test_copy_inplace_same_dtype[dtype2-shape3]": {
         "params": {
             "dtype": "torch.bfloat16",
             "shape": [
@@ -478,11 +1186,11 @@
         },
         "result": "passed",
         "opname": [
-            "neg_"
+            "copy_"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg_[dtype2-shape4]": {
+    "tests/test_unary_pointwise_ops.py::test_copy_inplace_same_dtype[dtype2-shape4]": {
         "params": {
             "dtype": "torch.bfloat16",
             "shape": [
@@ -494,11 +1202,11 @@
         },
         "result": "passed",
         "opname": [
-            "neg_"
+            "copy_"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_neg_[dtype2-shape5]": {
+    "tests/test_unary_pointwise_ops.py::test_copy_inplace_same_dtype[dtype2-shape5]": {
         "params": {
             "dtype": "torch.bfloat16",
             "shape": [
@@ -511,523 +1219,56 @@
         },
         "result": "passed",
         "opname": [
-            "neg_"
+            "copy_"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt[dtype0-shape0]": {
-        "params": {
-            "dtype": "torch.float16",
-            "shape": []
-        },
+    "tests/test_unary_pointwise_ops.py::test_copy_inplace_broadcast": {
+        "params": {},
         "result": "passed",
         "opname": [
-            "rsqrt"
+            "copy_"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt[dtype0-shape1]": {
-        "params": {
-            "dtype": "torch.float16",
-            "shape": [
-                1
-            ]
-        },
+    "tests/test_unary_pointwise_ops.py::test_copy_inplace_dtype_fallback": {
+        "params": {},
         "result": "passed",
         "opname": [
-            "rsqrt"
+            "copy_"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt[dtype0-shape2]": {
+    "tests/test_unary_pointwise_ops.py::test_copy_inplace_mixed_dtype_triton[src_dtype0-dst_dtype0]": {
         "params": {
-            "dtype": "torch.float16",
-            "shape": [
-                1024,
-                1024
-            ]
+            "src_dtype": "torch.float32",
+            "dst_dtype": "torch.int32"
         },
         "result": "passed",
         "opname": [
-            "rsqrt"
+            "copy_"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt[dtype0-shape3]": {
+    "tests/test_unary_pointwise_ops.py::test_copy_inplace_mixed_dtype_triton[src_dtype1-dst_dtype1]": {
         "params": {
-            "dtype": "torch.float16",
-            "shape": [
-                20,
-                320,
-                15
-            ]
+            "src_dtype": "torch.int16",
+            "dst_dtype": "torch.float32"
         },
         "result": "passed",
         "opname": [
-            "rsqrt"
+            "copy_"
         ],
         "skipped_reason": null
     },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt[dtype0-shape4]": {
+    "tests/test_unary_pointwise_ops.py::test_copy_inplace_mixed_dtype_triton[src_dtype2-dst_dtype2]": {
         "params": {
-            "dtype": "torch.float16",
-            "shape": [
-                16,
-                128,
-                64,
-                60
-            ]
+            "src_dtype": "torch.bool",
+            "dst_dtype": "torch.float32"
         },
         "result": "passed",
         "opname": [
-            "rsqrt"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt[dtype0-shape5]": {
-        "params": {
-            "dtype": "torch.float16",
-            "shape": [
-                16,
-                7,
-                57,
-                32,
-                29
-            ]
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt[dtype1-shape0]": {
-        "params": {
-            "dtype": "torch.float32",
-            "shape": []
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt[dtype1-shape1]": {
-        "params": {
-            "dtype": "torch.float32",
-            "shape": [
-                1
-            ]
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt[dtype1-shape2]": {
-        "params": {
-            "dtype": "torch.float32",
-            "shape": [
-                1024,
-                1024
-            ]
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt[dtype1-shape3]": {
-        "params": {
-            "dtype": "torch.float32",
-            "shape": [
-                20,
-                320,
-                15
-            ]
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt[dtype1-shape4]": {
-        "params": {
-            "dtype": "torch.float32",
-            "shape": [
-                16,
-                128,
-                64,
-                60
-            ]
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt[dtype1-shape5]": {
-        "params": {
-            "dtype": "torch.float32",
-            "shape": [
-                16,
-                7,
-                57,
-                32,
-                29
-            ]
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt[dtype2-shape0]": {
-        "params": {
-            "dtype": "torch.bfloat16",
-            "shape": []
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt[dtype2-shape1]": {
-        "params": {
-            "dtype": "torch.bfloat16",
-            "shape": [
-                1
-            ]
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt[dtype2-shape2]": {
-        "params": {
-            "dtype": "torch.bfloat16",
-            "shape": [
-                1024,
-                1024
-            ]
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt[dtype2-shape3]": {
-        "params": {
-            "dtype": "torch.bfloat16",
-            "shape": [
-                20,
-                320,
-                15
-            ]
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt[dtype2-shape4]": {
-        "params": {
-            "dtype": "torch.bfloat16",
-            "shape": [
-                16,
-                128,
-                64,
-                60
-            ]
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt[dtype2-shape5]": {
-        "params": {
-            "dtype": "torch.bfloat16",
-            "shape": [
-                16,
-                7,
-                57,
-                32,
-                29
-            ]
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt_[dtype0-shape0]": {
-        "params": {
-            "dtype": "torch.float16",
-            "shape": []
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt_"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt_[dtype0-shape1]": {
-        "params": {
-            "dtype": "torch.float16",
-            "shape": [
-                1
-            ]
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt_"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt_[dtype0-shape2]": {
-        "params": {
-            "dtype": "torch.float16",
-            "shape": [
-                1024,
-                1024
-            ]
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt_"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt_[dtype0-shape3]": {
-        "params": {
-            "dtype": "torch.float16",
-            "shape": [
-                20,
-                320,
-                15
-            ]
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt_"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt_[dtype0-shape4]": {
-        "params": {
-            "dtype": "torch.float16",
-            "shape": [
-                16,
-                128,
-                64,
-                60
-            ]
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt_"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt_[dtype0-shape5]": {
-        "params": {
-            "dtype": "torch.float16",
-            "shape": [
-                16,
-                7,
-                57,
-                32,
-                29
-            ]
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt_"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt_[dtype1-shape0]": {
-        "params": {
-            "dtype": "torch.float32",
-            "shape": []
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt_"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt_[dtype1-shape1]": {
-        "params": {
-            "dtype": "torch.float32",
-            "shape": [
-                1
-            ]
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt_"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt_[dtype1-shape2]": {
-        "params": {
-            "dtype": "torch.float32",
-            "shape": [
-                1024,
-                1024
-            ]
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt_"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt_[dtype1-shape3]": {
-        "params": {
-            "dtype": "torch.float32",
-            "shape": [
-                20,
-                320,
-                15
-            ]
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt_"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt_[dtype1-shape4]": {
-        "params": {
-            "dtype": "torch.float32",
-            "shape": [
-                16,
-                128,
-                64,
-                60
-            ]
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt_"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt_[dtype1-shape5]": {
-        "params": {
-            "dtype": "torch.float32",
-            "shape": [
-                16,
-                7,
-                57,
-                32,
-                29
-            ]
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt_"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt_[dtype2-shape0]": {
-        "params": {
-            "dtype": "torch.bfloat16",
-            "shape": []
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt_"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt_[dtype2-shape1]": {
-        "params": {
-            "dtype": "torch.bfloat16",
-            "shape": [
-                1
-            ]
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt_"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt_[dtype2-shape2]": {
-        "params": {
-            "dtype": "torch.bfloat16",
-            "shape": [
-                1024,
-                1024
-            ]
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt_"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt_[dtype2-shape3]": {
-        "params": {
-            "dtype": "torch.bfloat16",
-            "shape": [
-                20,
-                320,
-                15
-            ]
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt_"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt_[dtype2-shape4]": {
-        "params": {
-            "dtype": "torch.bfloat16",
-            "shape": [
-                16,
-                128,
-                64,
-                60
-            ]
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt_"
-        ],
-        "skipped_reason": null
-    },
-    "tests/test_unary_pointwise_ops.py::test_accuracy_rsqrt_[dtype2-shape5]": {
-        "params": {
-            "dtype": "torch.bfloat16",
-            "shape": [
-                16,
-                7,
-                57,
-                32,
-                29
-            ]
-        },
-        "result": "passed",
-        "opname": [
-            "rsqrt_"
+            "copy_"
         ],
         "skipped_reason": null
     }
