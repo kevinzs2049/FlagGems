@@ -100,6 +100,16 @@ def _normalize_scalar_value(value):
     return value
 
 
+def _prepare_mask(mask, inp_shape):
+    if mask.dtype == torch.bool and tuple(mask.shape) == tuple(inp_shape):
+        return mask if mask.is_contiguous() else mask.contiguous()
+    if mask.dtype != torch.bool:
+        mask = mask.to(torch.bool)
+    if tuple(mask.shape) == tuple(inp_shape):
+        return mask if mask.is_contiguous() else mask.contiguous()
+    return mask.expand(inp_shape).contiguous()
+
+
 def _launch_masked_fill(inp, expand_mask, value, out):
     n_elements = inp.numel()
     if n_elements == 0:
@@ -172,8 +182,13 @@ def masked_fill(inp, mask, value):
     if inp.ndim == 0:
         return torch.tensor(value, dtype=inp.dtype, device=inp.device) if mask.item() else inp.clone()
 
+    if mask.ndim == 0:
+        if bool(mask.item()):
+            return torch.full_like(inp, value)
+        return inp.clone()
+
     inp_contig = inp.contiguous() if not inp.is_contiguous() else inp
-    expand_mask = mask.to(torch.bool).expand(inp.shape).contiguous()
+    expand_mask = _prepare_mask(mask, inp_contig.shape)
     out = torch.empty_like(inp_contig, dtype=inp_contig.dtype, device=inp_contig.device)
     _launch_masked_fill(inp_contig, expand_mask, value, out)
     return out
@@ -191,8 +206,13 @@ def masked_fill_(inp, mask, value):
             inp[()] = value
         return inp
 
+    if mask.ndim == 0:
+        if bool(mask.item()):
+            inp.fill_(value)
+        return inp
+
     inp_contig = inp.contiguous() if not inp.is_contiguous() else inp
-    expand_mask = mask.to(torch.bool).expand(inp.shape).contiguous()
+    expand_mask = _prepare_mask(mask, inp_contig.shape)
     _launch_masked_fill_inplace(inp_contig, expand_mask, value)
     if inp_contig is not inp:
         inp.copy_(inp_contig)

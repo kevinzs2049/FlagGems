@@ -556,29 +556,83 @@ def apply_gems_patches_to_vllm(verbose=True):
     import vllm  # noqa: F401
     import vllm._custom_ops as ops  # noqa: F401
 
+    def _optional_import_attr(module_name, attr_name):
+        try:
+            module = __import__(module_name, fromlist=[attr_name])
+            return getattr(module, attr_name)
+        except Exception as e:
+            if verbose:
+                print(
+                    f"[FlagGems][vLLM patch] skip {module_name}.{attr_name}: {e}"
+                )
+            return None
+
+    def _optional_import_first(candidates, attr_name):
+        for module_name in candidates:
+            obj = _optional_import_attr(module_name, attr_name)
+            if obj is not None:
+                return obj
+        return None
+
     try:
         from vllm.attention.ops import vit_attn_wrappers as vitw
     except (ModuleNotFoundError, ImportError):
         vitw = None
-    from vllm.attention.ops.paged_attn import PagedAttention
-    from vllm.model_executor.layers.activation import SiluAndMul
-    from vllm.model_executor.layers.layernorm import RMSNorm
-    from vllm.model_executor.layers.rotary_embedding import RotaryEmbedding
-    from vllm.v1.attention.backends.flash_attn import FlashAttentionImpl
-    from vllm.v1.attention.backends.mla.flashattn_mla import FlashAttnMLAImpl
-    from vllm.v1.attention.backends.mla.triton_mla import TritonMLAImpl
+    PagedAttention = _optional_import_first(
+        [
+            "vllm.attention.ops.paged_attn",
+            "vllm.v1.attention.ops.paged_attn",
+        ],
+        "PagedAttention",
+    )
+    SiluAndMul = _optional_import_attr(
+        "vllm.model_executor.layers.activation", "SiluAndMul"
+    )
+    RMSNorm = _optional_import_attr("vllm.model_executor.layers.layernorm", "RMSNorm")
+    RotaryEmbedding = _optional_import_attr(
+        "vllm.model_executor.layers.rotary_embedding", "RotaryEmbedding"
+    )
+    FlashAttentionImpl = _optional_import_attr(
+        "vllm.v1.attention.backends.flash_attn", "FlashAttentionImpl"
+    )
+    TritonMLAImpl = _optional_import_attr(
+        "vllm.v1.attention.backends.mla.triton_mla", "TritonMLAImpl"
+    )
+    FlashAttnMLAImpl = _optional_import_attr(
+        "vllm.v1.attention.backends.mla.flashattn_mla", "FlashAttnMLAImpl"
+    )
 
     dispatch_key = flag_gems.runtime.device.dispatch_key
 
-    module_patches = [
-        (RMSNorm, "forward_cuda", custom_gems_rms_forward_cuda),
-        (RotaryEmbedding, "forward_cuda", custom_gems_rope_forward_cuda),
-        (PagedAttention, "write_to_paged_cache", custom_gems_write_to_paged_cache),
-        (SiluAndMul, "forward_cuda", custom_gems_silu_and_mul),
-        (TritonMLAImpl, "_forward_decode", custom_gems_flash_mla_forward),
-        (FlashAttentionImpl, "forward", custom_gems_flash_attention_impl_forward),
-        (FlashAttnMLAImpl, "_forward_decode", custom_gems_flashattn_mla_forward_decode),
-    ]
+    module_patches = []
+    if RMSNorm is not None:
+        module_patches.append((RMSNorm, "forward_cuda", custom_gems_rms_forward_cuda))
+    if RotaryEmbedding is not None:
+        module_patches.append(
+            (RotaryEmbedding, "forward_cuda", custom_gems_rope_forward_cuda)
+        )
+    if PagedAttention is not None:
+        module_patches.append(
+            (PagedAttention, "write_to_paged_cache", custom_gems_write_to_paged_cache)
+        )
+    if SiluAndMul is not None:
+        module_patches.append((SiluAndMul, "forward_cuda", custom_gems_silu_and_mul))
+    if TritonMLAImpl is not None:
+        module_patches.append(
+            (TritonMLAImpl, "_forward_decode", custom_gems_flash_mla_forward)
+        )
+    if FlashAttentionImpl is not None:
+        module_patches.append(
+            (FlashAttentionImpl, "forward", custom_gems_flash_attention_impl_forward)
+        )
+    if FlashAttnMLAImpl is not None:
+        module_patches.append(
+            (
+                FlashAttnMLAImpl,
+                "_forward_decode",
+                custom_gems_flashattn_mla_forward_decode,
+            )
+        )
     for cls, method_name, new_method in module_patches:
         patch_module_method(cls, method_name, new_method, verbose)
 

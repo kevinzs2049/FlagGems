@@ -9,6 +9,202 @@ from flag_gems.utils import broadcastable_to
 from flag_gems.utils import triton_lang_extension as tle
 
 
+ADDMM_M1_CONFIG_TABLE = (
+    {"n_min": 4096, "k_min": 0, "config": (64, 8)},
+    {"n_min": 2048, "k_min": 0, "config": (32, 16)},
+    {"n_min": 0, "k_min": 3072, "config": (16, 16)},
+    {"n_min": 0, "k_min": 0, "config": (8, 32)},
+)
+
+ADDMM_M1_TRANSPOSED_CONFIG_TABLE = (
+    {"n_min": 65536, "k_min": 0, "config": (32, 32)},
+    {"n_min": 2048, "k_min": 0, "config": (32, 16)},
+    {"n_min": 0, "k_min": 3072, "config": (16, 16)},
+    {"n_min": 0, "k_min": 0, "config": (8, 32)},
+)
+
+
+def _select_addmm_m1_config(N, K):
+    for rule in ADDMM_M1_CONFIG_TABLE:
+        if N >= rule.get("n_min", 0) and K >= rule.get("k_min", 0):
+            return rule["config"]
+    return 8, 32
+
+
+def _select_addmm_m1_transposed_config(N, K):
+    for rule in ADDMM_M1_TRANSPOSED_CONFIG_TABLE:
+        if N >= rule.get("n_min", 0) and K >= rule.get("k_min", 0):
+            return rule["config"]
+    return 8, 32
+
+
+def _is_rhs_transposed_layout(rhs):
+    if rhs.ndim != 2:
+        return False
+    return rhs.stride(0) == 1 and rhs.stride(1) >= rhs.shape[0]
+
+
+def _use_addmm_m1_transposed_fastpath_shape(N, K):
+    # Avoid unstable LLVM lowering for tiny matrices on ARM cpu backend.
+    return N >= 256 and K >= 256
+
+
+def _use_addmm_m1_fastpath_shape(N, K):
+    return N >= 256 and K >= 256
+
+
+@triton.jit(do_not_specialize=["alpha", "beta"])
+def addmm_m1_kernel(
+    a_ptr,
+    b_ptr,
+    i_ptr,
+    c_ptr,
+    alpha,
+    beta,
+    N,
+    K,
+    stride_ak,
+    stride_bk,
+    stride_bn,
+    stride_in,
+    stride_cn,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    EVEN_K: tl.constexpr,
+):
+    pid_n = tle.program_id(0)
+    rn = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    rk = tl.arange(0, BLOCK_K)
+
+    a_ptrs = a_ptr + rk * stride_ak
+    b_ptrs = b_ptr + rk[:, None] * stride_bk + rn[None, :] * stride_bn
+    acc = tl.zeros((BLOCK_N,), dtype=tl.float32)
+
+    for k in range(0, tl.cdiv(K, BLOCK_K)):
+        if EVEN_K:
+            a = tl.load(a_ptrs)
+            b = tl.load(b_ptrs)
+        else:
+            k_remaining = K - k * BLOCK_K
+            a = tl.load(a_ptrs, mask=rk < k_remaining, other=0.0)
+            b = tl.load(
+                b_ptrs,
+                mask=(rk[:, None] < k_remaining) & (rn[None, :] < N),
+                other=0.0,
+            )
+
+        a_fp = a.to(tl.float32)
+        b_fp = b.to(tl.float32)
+        acc += tl.sum(b_fp * a_fp[:, None], axis=0)
+        a_ptrs += BLOCK_K * stride_ak
+        b_ptrs += BLOCK_K * stride_bk
+
+    bias_ptrs = i_ptr + rn * stride_in
+    bias = tl.load(bias_ptrs, mask=rn < N, other=0.0).to(tl.float32)
+    out = acc * alpha + bias * beta
+    c_ptrs = c_ptr + rn * stride_cn
+    tl.store(c_ptrs, out.to(c_ptr.dtype.element_ty), mask=rn < N)
+
+
+@triton.jit(do_not_specialize=["alpha", "beta"])
+def addmm_m1_transposed_rhs_kernel(
+    a_ptr,
+    b_ptr,
+    i_ptr,
+    c_ptr,
+    alpha,
+    beta,
+    N,
+    K,
+    stride_ak,
+    stride_bk,
+    stride_bn,
+    stride_in,
+    stride_cn,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    EVEN_K: tl.constexpr,
+):
+    pid_n = tle.program_id(0)
+    rn = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    rk = tl.arange(0, BLOCK_K)
+
+    a_ptrs = a_ptr + rk * stride_ak
+    bt_ptrs = b_ptr + rn[:, None] * stride_bn + rk[None, :] * stride_bk
+    acc = tl.zeros((BLOCK_N,), dtype=tl.float32)
+
+    for k in range(0, tl.cdiv(K, BLOCK_K)):
+        if EVEN_K:
+            a = tl.load(a_ptrs)
+            bt = tl.load(bt_ptrs, mask=rn[:, None] < N, other=0.0)
+        else:
+            k_remaining = K - k * BLOCK_K
+            a = tl.load(a_ptrs, mask=rk < k_remaining, other=0.0)
+            bt = tl.load(
+                bt_ptrs,
+                mask=(rn[:, None] < N) & (rk[None, :] < k_remaining),
+                other=0.0,
+            )
+
+        a_fp = a.to(tl.float32)
+        bt_fp = bt.to(tl.float32)
+        acc += tl.sum(bt_fp * a_fp[None, :], axis=1)
+        a_ptrs += BLOCK_K * stride_ak
+        bt_ptrs += BLOCK_K * stride_bk
+
+    bias_ptrs = i_ptr + rn * stride_in
+    bias = tl.load(bias_ptrs, mask=rn < N, other=0.0).to(tl.float32)
+    out = acc * alpha + bias * beta
+    c_ptrs = c_ptr + rn * stride_cn
+    tl.store(c_ptrs, out.to(c_ptr.dtype.element_ty), mask=rn < N)
+
+
+def _launch_addmm_m1_kernel(mat1, mat2, bias, out, alpha, beta, N, K):
+    block_n, block_k = _select_addmm_m1_config(N, K)
+    grid = lambda META: (triton.cdiv(N, block_n),)
+    addmm_m1_kernel[grid](
+        mat1,
+        mat2,
+        bias,
+        out,
+        alpha,
+        beta,
+        N,
+        K,
+        mat1.stride(1),
+        mat2.stride(0),
+        mat2.stride(1),
+        bias.stride(1),
+        out.stride(1),
+        BLOCK_N=block_n,
+        BLOCK_K=block_k,
+        EVEN_K=(K % block_k == 0),
+    )
+
+
+def _launch_addmm_m1_transposed_rhs_kernel(mat1, mat2, bias, out, alpha, beta, N, K):
+    block_n, block_k = _select_addmm_m1_transposed_config(N, K)
+    grid = lambda META: (triton.cdiv(N, block_n),)
+    addmm_m1_transposed_rhs_kernel[grid](
+        mat1,
+        mat2,
+        bias,
+        out,
+        alpha,
+        beta,
+        N,
+        K,
+        mat1.stride(1),
+        mat2.stride(0),
+        mat2.stride(1),
+        bias.stride(1),
+        out.stride(1),
+        BLOCK_N=block_n,
+        BLOCK_K=block_k,
+        EVEN_K=(K % block_k == 0),
+    )
+
+
 # @libentry()
 @triton.autotune(
     configs=runtime.get_tuned_config("addmm"),
@@ -88,41 +284,67 @@ def addmm(bias, mat1, mat2, *, beta=1, alpha=1):
     out_shape = (M, N)
     bias = bias.broadcast_to(out_shape)
 
-    if mat1.dtype is torch.bfloat16 or mat2.dtype is torch.bfloat16 or bias.dtype is torch.bfloat16:
-        # Reuse arm mm + pointwise ops for bf16 to avoid addmm bf16 masked-load lowering failures.
-        out = torch.mm(mat1, mat2)
-        if alpha != 1:
-            out = out * alpha
-        if beta != 0:
-            out = out + bias if beta == 1 else out + bias * beta
-        return out
-    else:
-        out = torch.empty(out_shape, device=mat1.device, dtype=mat1.dtype)
-        grid = lambda META: (
-            triton.cdiv(M, META["BLOCK_SIZE_M"]),
-            triton.cdiv(N, META["BLOCK_SIZE_N"]),
+    if M == 1 and _use_addmm_m1_fastpath_shape(N, K):
+        bias_kernel = bias
+        use_fp32_m1 = (
+            mat1.dtype is torch.bfloat16
+            or mat2.dtype is torch.bfloat16
+            or bias.dtype is torch.bfloat16
         )
-        # with torch_device_fn.device(mat1.device):
-        addmm_kernel[grid](
-            mat1,
-            mat2,
-            bias,
-            out,
-            alpha,
-            beta,
-            M,
-            N,
-            K,
-            mat1.stride(0),
-            mat1.stride(1),
-            mat2.stride(0),
-            mat2.stride(1),
-            bias.stride(0),
-            bias.stride(1),
-            out.stride(0),
-            out.stride(1),
+        out_kernel = torch.empty(
+            out_shape,
+            device=mat1.device,
+            dtype=(torch.float32 if use_fp32_m1 else mat1.dtype),
         )
-        return out
+        if _is_rhs_transposed_layout(mat2) and _use_addmm_m1_transposed_fastpath_shape(
+            N, K
+        ):
+            _launch_addmm_m1_transposed_rhs_kernel(
+                mat1, mat2, bias_kernel, out_kernel, alpha, beta, N, K
+            )
+        else:
+            _launch_addmm_m1_kernel(
+                mat1, mat2, bias_kernel, out_kernel, alpha, beta, N, K
+            )
+        return out_kernel.to(mat1.dtype) if use_fp32_m1 else out_kernel
+
+    use_fp32_generic = (
+        mat1.dtype is torch.bfloat16
+        or mat2.dtype is torch.bfloat16
+        or bias.dtype is torch.bfloat16
+    )
+    mat1_kernel = mat1.to(torch.float32) if use_fp32_generic else mat1
+    mat2_kernel = mat2.to(torch.float32) if use_fp32_generic else mat2
+    bias_kernel = bias.to(torch.float32) if use_fp32_generic else bias
+    out = torch.empty(
+        out_shape,
+        device=mat1.device,
+        dtype=(torch.float32 if use_fp32_generic else mat1.dtype),
+    )
+    grid = lambda META: (
+        triton.cdiv(M, META["BLOCK_SIZE_M"]),
+        triton.cdiv(N, META["BLOCK_SIZE_N"]),
+    )
+    addmm_kernel[grid](
+        mat1_kernel,
+        mat2_kernel,
+        bias_kernel,
+        out,
+        alpha,
+        beta,
+        M,
+        N,
+        K,
+        mat1_kernel.stride(0),
+        mat1_kernel.stride(1),
+        mat2_kernel.stride(0),
+        mat2_kernel.stride(1),
+        bias_kernel.stride(0),
+        bias_kernel.stride(1),
+        out.stride(0),
+        out.stride(1),
+    )
+    return out.to(mat1.dtype) if use_fp32_generic else out
 
 
 def addmm_out(bias, mat1, mat2, *, beta=1, alpha=1, out=None):
@@ -144,35 +366,68 @@ def addmm_out(bias, mat1, mat2, *, beta=1, alpha=1, out=None):
         mat2 = mat2.contiguous()
     bias = bias.broadcast_to(out.shape)
 
-    if mat1.dtype is torch.bfloat16 or mat2.dtype is torch.bfloat16 or bias.dtype is torch.bfloat16:
-        mm_out = torch.mm(mat1, mat2)
-        if alpha != 1:
-            mm_out = mm_out * alpha
-        if beta != 0:
-            mm_out = mm_out + bias if beta == 1 else mm_out + bias * beta
-        out.copy_(mm_out.to(out.dtype))
-    else:
-        grid = lambda META: (
-            triton.cdiv(M, META["BLOCK_SIZE_M"]),
-            triton.cdiv(N, META["BLOCK_SIZE_N"]),
+    if M == 1 and _use_addmm_m1_fastpath_shape(N, K):
+        bias_kernel = bias
+        use_fp32_m1 = (
+            mat1.dtype is torch.bfloat16
+            or mat2.dtype is torch.bfloat16
+            or bias.dtype is torch.bfloat16
         )
-        addmm_kernel[grid](
-            mat1,
-            mat2,
-            bias,
-            out,
-            alpha,
-            beta,
-            M,
-            N,
-            K,
-            mat1.stride(0),
-            mat1.stride(1),
-            mat2.stride(0),
-            mat2.stride(1),
-            bias.stride(0),
-            bias.stride(1),
-            out.stride(0),
-            out.stride(1),
+        out_kernel = (
+            torch.empty(out.shape, device=out.device, dtype=torch.float32)
+            if use_fp32_m1
+            else out
         )
+        if _is_rhs_transposed_layout(mat2) and _use_addmm_m1_transposed_fastpath_shape(
+            N, K
+        ):
+            _launch_addmm_m1_transposed_rhs_kernel(
+                mat1, mat2, bias_kernel, out_kernel, alpha, beta, N, K
+            )
+        else:
+            _launch_addmm_m1_kernel(
+                mat1, mat2, bias_kernel, out_kernel, alpha, beta, N, K
+            )
+        if use_fp32_m1:
+            out.copy_(out_kernel.to(out.dtype))
+        return out
+
+    use_fp32_generic = (
+        mat1.dtype is torch.bfloat16
+        or mat2.dtype is torch.bfloat16
+        or bias.dtype is torch.bfloat16
+    )
+    mat1_kernel = mat1.to(torch.float32) if use_fp32_generic else mat1
+    mat2_kernel = mat2.to(torch.float32) if use_fp32_generic else mat2
+    bias_kernel = bias.to(torch.float32) if use_fp32_generic else bias
+    out_kernel = (
+        torch.empty(out.shape, device=out.device, dtype=torch.float32)
+        if use_fp32_generic
+        else out
+    )
+    grid = lambda META: (
+        triton.cdiv(M, META["BLOCK_SIZE_M"]),
+        triton.cdiv(N, META["BLOCK_SIZE_N"]),
+    )
+    addmm_kernel[grid](
+        mat1_kernel,
+        mat2_kernel,
+        bias_kernel,
+        out_kernel,
+        alpha,
+        beta,
+        M,
+        N,
+        K,
+        mat1_kernel.stride(0),
+        mat1_kernel.stride(1),
+        mat2_kernel.stride(0),
+        mat2_kernel.stride(1),
+        bias_kernel.stride(0),
+        bias_kernel.stride(1),
+        out_kernel.stride(0),
+        out_kernel.stride(1),
+    )
+    if use_fp32_generic:
+        out.copy_(out_kernel.to(out.dtype))
     return out

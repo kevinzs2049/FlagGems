@@ -28,15 +28,20 @@ MM_M1_CONFIG_TABLE = (
 )
 
 MM_M1_TRANSPOSED_CONFIG_TABLE = (
-    # Keep very large vocab projection on the generic kernel.
-    {"n_min": 65536, "k_min": 0, "config": None},
-    {"n_min": 2048, "k_min": 0, "config": (32, 16)},
-    {"n_min": 0, "k_min": 3072, "config": (16, 16)},
+    # Decode vocab projection with transposed RHS benefits from wider K tiles.
+    {"n_min": 65536, "k_min": 0, "k_max": 1536, "config": (8, 32)},
+    # M=1 FC hotspots with K~=1024.
+    {"n_min": 4096, "k_min": 0, "k_max": 1536, "config": (16, 16)},
+    {"n_min": 2048, "k_min": 0, "k_max": 1536, "config": (32, 16)},
+    # K-heavy projections in FFN blocks.
+    {"n_min": 0, "k_min": 2048, "config": (16, 32)},
     {"n_min": 0, "k_min": 0, "config": (8, 32)},
 )
 
 _MM_PREPACK_CACHE = OrderedDict()
 _MM_PREPACK_CACHE_BYTES = 0
+_MM_FP32_CAST_CACHE = OrderedDict()
+_MM_FP32_CAST_CACHE_BYTES = 0
 
 
 @triton.jit
@@ -252,13 +257,16 @@ def _select_mm_m1_config(N, K):
 
 def _select_mm_m1_transposed_config(N, K):
     for rule in MM_M1_TRANSPOSED_CONFIG_TABLE:
-        if N >= rule.get("n_min", 0) and K >= rule.get("k_min", 0):
+        k_max = rule.get("k_max")
+        if N >= rule.get("n_min", 0) and K >= rule.get("k_min", 0) and (
+            k_max is None or K <= k_max
+        ):
             return rule["config"]
-    return 8, 32
+    return 64, 8
 
 
 def _m1_fastpath_enabled():
-    return os.getenv("FLAGGEMS_ARM_M1_FASTPATH", "0").lower() in ("1", "true", "on")
+    return os.getenv("FLAGGEMS_ARM_M1_FASTPATH", "1").lower() in ("1", "true", "on")
 
 
 def _m1_transposed_fastpath_enabled():
@@ -267,6 +275,12 @@ def _m1_transposed_fastpath_enabled():
         "true",
         "on",
     )
+
+
+def _use_m1_transposed_fastpath_shape(N, K):
+    # Tiny matrices can hit unstable LLVM lowering on ARM cpu backend for this
+    # specialized kernel; keep generic path for those shapes.
+    return N >= 256 and K >= 256
 
 
 def _mm_prepack_enabled():
@@ -343,6 +357,72 @@ def _maybe_get_prepacked_rhs(rhs):
     return packed
 
 
+def _mm_fp32_cast_cache_enabled():
+    return os.getenv("FLAGGEMS_ARM_MM_FP32_CAST_CACHE", "1").lower() in (
+        "1",
+        "true",
+        "on",
+    )
+
+
+def _fp32_cast_key(t):
+    return (
+        int(t.data_ptr()),
+        tuple(t.shape),
+        tuple(t.stride()),
+        int(getattr(t, "_version", 0)),
+        str(t.dtype),
+        str(t.device),
+    )
+
+
+def _maybe_get_cached_fp32(t):
+    global _MM_FP32_CAST_CACHE_BYTES
+    if not _mm_fp32_cast_cache_enabled():
+        return t.to(torch.float32)
+    if t.dtype is not torch.bfloat16:
+        return t.to(torch.float32)
+    if t.requires_grad:
+        return t.to(torch.float32)
+
+    min_numel = max(_get_env_int("FLAGGEMS_ARM_MM_FP32_CAST_MIN_NUMEL", 4096), 0)
+    if t.numel() < min_numel:
+        return t.to(torch.float32)
+
+    max_bytes = max(_get_env_int("FLAGGEMS_ARM_MM_FP32_CAST_MAX_BYTES", 2**31), 0)
+    if max_bytes <= 0:
+        return t.to(torch.float32)
+
+    key = _fp32_cast_key(t)
+    cached = _MM_FP32_CAST_CACHE.get(key)
+    if cached is not None:
+        _MM_FP32_CAST_CACHE.move_to_end(key)
+        return cached
+
+    fp32_t = t.to(torch.float32)
+    fp32_bytes = _tensor_nbytes(fp32_t)
+    max_tensor_bytes = max(
+        _get_env_int("FLAGGEMS_ARM_MM_FP32_CAST_MAX_TENSOR_BYTES", 2**30), 0
+    )
+    if (max_tensor_bytes > 0 and fp32_bytes > max_tensor_bytes) or fp32_bytes > max_bytes:
+        return fp32_t
+
+    max_entries = max(_get_env_int("FLAGGEMS_ARM_MM_FP32_CAST_MAX_ENTRIES", 64), 1)
+    while _MM_FP32_CAST_CACHE and (
+        _MM_FP32_CAST_CACHE_BYTES + fp32_bytes > max_bytes
+        or len(_MM_FP32_CAST_CACHE) >= max_entries
+    ):
+        _, evicted = _MM_FP32_CAST_CACHE.popitem(last=False)
+        _MM_FP32_CAST_CACHE_BYTES -= _tensor_nbytes(evicted)
+
+    if fp32_bytes > max_bytes:
+        return fp32_t
+
+    _MM_FP32_CAST_CACHE[key] = fp32_t
+    _MM_FP32_CAST_CACHE_BYTES += fp32_bytes
+    return fp32_t
+
+
 def _launch_mm_m1_kernel(a, b, c, N, K):
     m1_cfg = _select_mm_m1_config(N, K)
     if m1_cfg is None:
@@ -406,28 +486,42 @@ def mm(a, b):
     # allocates output
     c_dtype = get_higher_dtype(a.dtype, b.dtype)
     use_fp32_kernel = a.dtype is torch.bfloat16 or b.dtype is torch.bfloat16
-    # Keep bf16 inputs to avoid expensive full-tensor dtype conversion.
-    # Use fp32 output buffer to avoid bf16 masked-store lowering failures.
-    a_kernel = a
-    b_kernel = b
+    if M == 1:
+        # Keep decode-path tensors in native dtype to avoid expensive full-tensor
+        # bf16<->fp32 copies; kernels accumulate in fp32 internally.
+        a_kernel = a
+        b_kernel = b
+        m1_out_fp32 = use_fp32_kernel
+        c_kernel = torch.empty(
+            (M, N),
+            device=device,
+            dtype=(torch.float32 if m1_out_fp32 else c_dtype),
+        )
+        if (
+            _m1_transposed_fastpath_enabled()
+            and _use_m1_transposed_fastpath_shape(N, K)
+            and _is_rhs_transposed_layout(b_kernel)
+        ):
+            packed_rhs = _maybe_get_prepacked_rhs(b_kernel)
+            if packed_rhs is not None and _launch_mm_m1_kernel(
+                a_kernel, packed_rhs, c_kernel, N, K
+            ):
+                return c_kernel.to(c_dtype) if m1_out_fp32 else c_kernel
+            if _launch_mm_m1_transposed_rhs_kernel(a_kernel, b_kernel, c_kernel, N, K):
+                return c_kernel.to(c_dtype) if m1_out_fp32 else c_kernel
+        if _m1_fastpath_enabled() and _launch_mm_m1_kernel(
+            a_kernel, b_kernel, c_kernel, N, K
+        ):
+            return c_kernel.to(c_dtype) if m1_out_fp32 else c_kernel
+
+    # Generic path keeps bf16 in fp32 kernel buffers to avoid known LLVM lowering failures.
+    a_kernel = a.to(torch.float32) if use_fp32_kernel else a
+    b_kernel = _maybe_get_cached_fp32(b) if use_fp32_kernel else b
     c_kernel = torch.empty(
         (M, N),
         device=device,
         dtype=(torch.float32 if use_fp32_kernel else c_dtype),
     )
-    if M == 1:
-        if _m1_transposed_fastpath_enabled() and _is_rhs_transposed_layout(b_kernel):
-            packed_rhs = _maybe_get_prepacked_rhs(b_kernel)
-            if packed_rhs is not None and _launch_mm_m1_kernel(
-                a_kernel, packed_rhs, c_kernel, N, K
-            ):
-                return c_kernel.to(c_dtype) if use_fp32_kernel else c_kernel
-            if _launch_mm_m1_transposed_rhs_kernel(a_kernel, b_kernel, c_kernel, N, K):
-                return c_kernel.to(c_dtype) if use_fp32_kernel else c_kernel
-        if _m1_fastpath_enabled() and _launch_mm_m1_kernel(
-            a_kernel, b_kernel, c_kernel, N, K
-        ):
-            return c_kernel.to(c_dtype) if use_fp32_kernel else c_kernel
 
     BLOCK_M, BLOCK_N, BLOCK_K = _select_mm_config(M, N, K)
     EVEN_K = K % BLOCK_K == 0
@@ -473,32 +567,45 @@ def mm_out(a, b, *, out):
     assert out is not None, "out tensor is required"
     assert out.shape == (M, N), "incompatible out shape"
     use_fp32_kernel = a.dtype is torch.bfloat16 or b.dtype is torch.bfloat16
-    a_kernel = a
-    b_kernel = b
-    out_kernel = (
-        torch.empty((M, N), device=out.device, dtype=torch.float32)
-        if use_fp32_kernel
-        else out
-    )
     if M == 1:
-        if _m1_transposed_fastpath_enabled() and _is_rhs_transposed_layout(b_kernel):
+        a_kernel = a
+        b_kernel = b
+        m1_out_fp32 = use_fp32_kernel
+        out_kernel = (
+            torch.empty((M, N), device=out.device, dtype=torch.float32)
+            if m1_out_fp32
+            else out
+        )
+        if (
+            _m1_transposed_fastpath_enabled()
+            and _use_m1_transposed_fastpath_shape(N, K)
+            and _is_rhs_transposed_layout(b_kernel)
+        ):
             packed_rhs = _maybe_get_prepacked_rhs(b_kernel)
             if packed_rhs is not None and _launch_mm_m1_kernel(
                 a_kernel, packed_rhs, out_kernel, N, K
             ):
-                if use_fp32_kernel:
+                if m1_out_fp32:
                     out.copy_(out_kernel.to(out.dtype))
                 return out
             if _launch_mm_m1_transposed_rhs_kernel(a_kernel, b_kernel, out_kernel, N, K):
-                if use_fp32_kernel:
+                if m1_out_fp32:
                     out.copy_(out_kernel.to(out.dtype))
                 return out
         if _m1_fastpath_enabled() and _launch_mm_m1_kernel(
             a_kernel, b_kernel, out_kernel, N, K
         ):
-            if use_fp32_kernel:
+            if m1_out_fp32:
                 out.copy_(out_kernel.to(out.dtype))
             return out
+
+    a_kernel = a.to(torch.float32) if use_fp32_kernel else a
+    b_kernel = _maybe_get_cached_fp32(b) if use_fp32_kernel else b
+    out_kernel = (
+        torch.empty((M, N), device=out.device, dtype=torch.float32)
+        if use_fp32_kernel
+        else out
+    )
 
     BLOCK_M, BLOCK_N, BLOCK_K = _select_mm_config(M, N, K)
     EVEN_K = K % BLOCK_K == 0

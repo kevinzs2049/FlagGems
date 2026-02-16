@@ -39,8 +39,6 @@ CUSTOMIZED_UNUSED_OPS = (
     "isin",
     "lt",
     "lt_scalar",
-    "mul",
-    "mul_",
     "silu",
     "silu_",
     "zero_",

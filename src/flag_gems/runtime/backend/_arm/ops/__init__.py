@@ -34,6 +34,7 @@ from .max import max
 from .mean import mean, mean_dim
 from .min import min
 from .mm import mm, mm_out
+from .mul import mul, mul_
 from .multinomial import multinomial
 from .neg import neg, neg_
 from .ones import ones
@@ -92,6 +93,8 @@ __all__ = [
     "min",
     "mm",
     "mm_out",
+    "mul",
+    "mul_",
     "multinomial",
     "neg",
     "neg_",

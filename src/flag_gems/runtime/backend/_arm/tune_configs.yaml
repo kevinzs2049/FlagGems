@@ -255,6 +255,11 @@ index_select:
       BLOCK_M: 8
       BLOCK_N: 8
     num_warps: 4
+index:
+- META:
+    BLOCK_SIZE0: 1
+    BLOCK_SIZE1: 1024
+  num_warps: 4
 layer_norm_persistent:
 - gen: true
   param_map:
