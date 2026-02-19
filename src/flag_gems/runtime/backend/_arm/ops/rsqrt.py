@@ -9,6 +9,11 @@ import triton.language as tl
 from flag_gems.ops.rsqrt import rsqrt as base_rsqrt
 from flag_gems.ops.rsqrt import rsqrt_ as base_rsqrt_
 
+import numpy as np
+
+# For small tensors, bypass Triton entirely via numpy (zero-copy views).
+_RSQRT_NATIVE_THRESHOLD = 4096
+
 _PREWARM_RSQRT_DONE = False
 _RSQRT_ROWS1_HOT_ENABLED = os.environ.get("GEMS_ARM_RSQRT_ROWS1_HOT", "1") == "1"
 _RSQRT_TINY_HOT_ENABLED = os.environ.get("GEMS_ARM_RSQRT_TINY_HOT", "1") == "1"
@@ -371,6 +376,9 @@ def _maybe_prewarm_rsqrt_kernels():
 
 def rsqrt(A):
     logging.debug("GEMS_ARM RSQRT")
+    if isinstance(A, torch.Tensor) and A.numel() < _RSQRT_NATIVE_THRESHOLD and A.is_contiguous() and A.dtype in (torch.float32, torch.float64):
+        an = A.detach().numpy()
+        return torch.from_numpy(1.0 / np.sqrt(an))
     _maybe_prewarm_rsqrt_kernels()
     if isinstance(A, torch.Tensor):
         return _rsqrt_triton(A)
@@ -379,6 +387,10 @@ def rsqrt(A):
 
 def rsqrt_(A):
     logging.debug("GEMS_ARM RSQRT_")
+    if isinstance(A, torch.Tensor) and A.numel() < _RSQRT_NATIVE_THRESHOLD and A.is_contiguous() and A.dtype in (torch.float32, torch.float64):
+        an = A.detach().numpy()
+        np.divide(1.0, np.sqrt(an), out=an)
+        return A
     _maybe_prewarm_rsqrt_kernels()
     if isinstance(A, torch.Tensor) and A.is_contiguous():
         return _rsqrt_triton(A, out=A)

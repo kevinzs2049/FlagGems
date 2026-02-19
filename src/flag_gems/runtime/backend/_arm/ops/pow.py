@@ -11,6 +11,11 @@ from flag_gems.ops.pow import pow_tensor_scalar_ as base_pow_tensor_scalar_
 from flag_gems.ops.pow import pow_tensor_tensor as base_pow_tensor_tensor
 from flag_gems.ops.pow import pow_tensor_tensor_ as base_pow_tensor_tensor_
 
+import numpy as np
+
+# For small tensors, bypass Triton entirely via numpy (zero-copy views).
+_POW_NATIVE_THRESHOLD = 4096
+
 _PREWARM_POW_DONE = False
 _POW_SQUARE_HOT_ENABLED = os.environ.get("GEMS_ARM_POW_SQUARE_HOT", "1") == "1"
 _POW_TRITON_ENABLED = os.environ.get("GEMS_ARM_POW_TRITON", "1") == "1"
@@ -418,6 +423,8 @@ def _maybe_prewarm_pow_kernels():
 
 def pow_tensor_tensor(A, exponent):
     logging.debug("GEMS_ARM POW_TENSOR_TENSOR")
+    if isinstance(A, torch.Tensor) and A.numel() < _POW_NATIVE_THRESHOLD and A.is_contiguous():
+        return torch.from_numpy(np.power(A.detach().numpy(), float(exponent) if not isinstance(exponent, torch.Tensor) else exponent.detach().numpy()))
     _maybe_prewarm_pow_kernels()
     scalar_exp = _maybe_scalar(exponent)
     if scalar_exp is not None:
@@ -442,6 +449,12 @@ def pow_tensor_tensor_(A, exponent):
 
 def pow_tensor_scalar(A, exponent):
     logging.debug("GEMS_ARM POW_TENSOR_SCALAR")
+    if isinstance(A, torch.Tensor) and A.numel() < _POW_NATIVE_THRESHOLD and A.is_contiguous():
+        exp = float(exponent) if not isinstance(exponent, torch.Tensor) else exponent.item()
+        if exp == 2.0:
+            an = A.detach().numpy()
+            return torch.from_numpy(np.multiply(an, an))
+        return torch.from_numpy(np.power(A.detach().numpy(), exp))
     _maybe_prewarm_pow_kernels()
     scalar_exp = _maybe_scalar(exponent)
     if scalar_exp is not None:

@@ -13,6 +13,11 @@ from flag_gems import runtime
 from flag_gems.utils import dim_compress
 from flag_gems.utils import triton_lang_extension as tle
 
+import numpy as np
+
+# For small tensors, bypass Triton entirely via numpy (zero-copy views).
+_MEAN_NATIVE_THRESHOLD = 4096
+
 _PREWARM_MEAN_DONE = False
 _MEAN_PREWARM_ENABLED = os.environ.get("GEMS_ARM_MEAN_PREWARM", "1") == "1"
 
@@ -238,6 +243,10 @@ def _maybe_prewarm_mean_kernels():
 
 def mean(inp, *, dtype=None):
     logging.debug("GEMS MEAN")
+    if isinstance(inp, torch.Tensor) and inp.numel() < _MEAN_NATIVE_THRESHOLD and inp.is_contiguous():
+        result = float(np.mean(inp.detach().numpy()))
+        out_dtype = dtype if dtype is not None else inp.dtype
+        return torch.tensor(result, dtype=out_dtype, device=inp.device)
     _maybe_prewarm_mean_kernels()
     M = inp.numel()
     if dtype is None:
@@ -284,6 +293,21 @@ def mean_dim_kernel(X, Mean, M, N, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr)
 
 def mean_dim(x, dim=None, keepdim=False, *, dtype=None):
     logging.debug("GEMS MEAN DIM")
+    if isinstance(x, torch.Tensor) and x.numel() < _MEAN_NATIVE_THRESHOLD and x.is_contiguous():
+        out_dtype = dtype if dtype is not None else x.dtype
+        if dim is None:
+            result = float(np.mean(x.detach().numpy()))
+            out = torch.tensor(result, dtype=out_dtype, device=x.device)
+            if keepdim:
+                out = out.reshape([1] * x.ndim)
+            return out
+        xn = x.detach().numpy()
+        axis = tuple(dim) if isinstance(dim, (list, tuple)) else dim
+        result_np = np.mean(xn, axis=axis, keepdims=keepdim)
+        result = torch.from_numpy(np.ascontiguousarray(result_np))
+        if result.dtype != out_dtype:
+            result = result.to(out_dtype)
+        return result
     _maybe_prewarm_mean_kernels()
 
     if dtype is None:

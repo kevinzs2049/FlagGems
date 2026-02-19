@@ -8,6 +8,11 @@ from flag_gems.utils import pointwise_dynamic
 
 logger = logging.getLogger(__name__)
 
+import numpy as np
+
+# For small tensors, bypass Triton entirely via numpy (zero-copy views).
+_MUL_NATIVE_THRESHOLD = 4096
+
 
 @triton.jit
 def _mul_contiguous_kernel(x_ptr, y_ptr, out_ptr, total_elements, BLOCK_SIZE: tl.constexpr):
@@ -260,6 +265,15 @@ def _try_mul_fastpath(lhs: torch.Tensor, rhs: torch.Tensor, out: torch.Tensor) -
 def mul(A, B):
     logger.debug("GEMS MUL")
 
+    # Fast path: small contiguous tensors bypass Triton via numpy
+    if isinstance(A, torch.Tensor) and isinstance(B, torch.Tensor):
+        if A.numel() < _MUL_NATIVE_THRESHOLD and B.numel() < _MUL_NATIVE_THRESHOLD and A.is_contiguous() and B.is_contiguous():
+            return torch.from_numpy(np.multiply(A.detach().numpy(), B.detach().numpy()))
+    elif isinstance(A, torch.Tensor) and A.numel() < _MUL_NATIVE_THRESHOLD and A.is_contiguous():
+        return torch.from_numpy(A.detach().numpy() * B)
+    elif isinstance(B, torch.Tensor) and B.numel() < _MUL_NATIVE_THRESHOLD and B.is_contiguous():
+        return torch.from_numpy(B.detach().numpy() * A)
+
     if isinstance(A, torch.Tensor) and isinstance(B, torch.Tensor):
         if A.numel() >= B.numel():
             out = torch.empty_like(A) if A.shape == torch.broadcast_shapes(A.shape, B.shape) else None
@@ -279,6 +293,15 @@ def mul(A, B):
 
 def mul_(A, B):
     logger.debug("GEMS MUL_")
+
+    # Fast path: small contiguous tensors bypass Triton via numpy inplace
+    if isinstance(A, torch.Tensor) and A.numel() < _MUL_NATIVE_THRESHOLD and A.is_contiguous():
+        an = A.detach().numpy()
+        if isinstance(B, torch.Tensor) and B.is_contiguous():
+            np.multiply(an, B.detach().numpy(), out=an)
+        else:
+            an *= B
+        return A
 
     if isinstance(B, torch.Tensor):
         if _try_mul_fastpath(A, B, A):

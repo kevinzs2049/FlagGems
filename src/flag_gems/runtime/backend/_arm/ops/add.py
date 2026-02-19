@@ -7,6 +7,11 @@ import triton.language as tl
 
 from flag_gems.utils import pointwise_dynamic
 
+import numpy as np
+
+# For small tensors, bypass Triton entirely via numpy (zero-copy views).
+# torch._C._TensorBase methods still go through ATen dispatch and recurse.
+
 _PREWARM_ADD_DONE = False
 _ADD_PREWARM_ENABLED = os.environ.get("GEMS_ARM_ADD_PREWARM", "1") == "1"
 _ADD_TRITON_ENABLED = os.environ.get("GEMS_ARM_ADD_TRITON", "1") == "1"
@@ -693,8 +698,33 @@ def _maybe_prewarm_add_kernels():
     _PREWARM_ADD_DONE = True
 
 
+# Below this numel threshold, native ATen add is faster than any Triton kernel
+# due to kernel launch overhead (~50us) vs native (~2us for small tensors).
+_ADD_NATIVE_THRESHOLD = 4096
+
+
 def add(A, B, *, alpha=1):
     logging.debug("GEMS_ARM ADD")
+    # Fast path: small contiguous tensors bypass Triton via numpy
+    if (
+        isinstance(A, torch.Tensor)
+        and isinstance(B, torch.Tensor)
+        and A.numel() < _ADD_NATIVE_THRESHOLD
+        and A.is_contiguous()
+        and B.is_contiguous()
+    ):
+        an = A.detach().numpy()
+        bn = B.detach().numpy()
+        if alpha == 1:
+            return torch.from_numpy(np.add(an, bn))
+        return torch.from_numpy(np.add(an, np.multiply(bn, float(alpha))))
+    if (
+        isinstance(A, torch.Tensor)
+        and not isinstance(B, torch.Tensor)
+        and A.numel() < _ADD_NATIVE_THRESHOLD
+        and A.is_contiguous()
+    ):
+        return torch.from_numpy(A.detach().numpy() + B * float(alpha))
     if _ADD_TRITON_ENABLED and _is_contiguous_add_3584_hotshape(A, B, alpha):
         out = torch.empty_like(A)
         _add_contiguous_3584_hot_alpha1_kernel[(1,)](
@@ -736,6 +766,30 @@ def add(A, B, *, alpha=1):
 
 def add_(A, B, *, alpha=1):
     logging.debug("GEMS_ARM ADD_")
+    # Fast path: small contiguous tensors bypass Triton via numpy inplace
+    if (
+        isinstance(A, torch.Tensor)
+        and isinstance(B, torch.Tensor)
+        and A.numel() < _ADD_NATIVE_THRESHOLD
+        and A.is_contiguous()
+        and B.is_contiguous()
+    ):
+        an = A.detach().numpy()
+        bn = B.detach().numpy()
+        if alpha == 1:
+            np.add(an, bn, out=an)
+        else:
+            np.add(an, bn * float(alpha), out=an)
+        return A
+    if (
+        isinstance(A, torch.Tensor)
+        and not isinstance(B, torch.Tensor)
+        and A.numel() < _ADD_NATIVE_THRESHOLD
+        and A.is_contiguous()
+    ):
+        an = A.detach().numpy()
+        an += B * float(alpha)
+        return A
     if _ADD_TRITON_ENABLED and _is_contiguous_add_3584_hotshape(A, B, alpha):
         _add_contiguous_3584_hot_alpha1_kernel[(1,)](
             A,
