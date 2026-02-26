@@ -124,3 +124,9 @@ __all__ = [
     "where_self_out",
     "zeros",
 ]
+
+# Register Triton-CPU INT8 GEMM for quantized::linear_dynamic (quantized:: namespace,
+# not aten::, so handled separately from the main FlagGems aten_lib registrations).
+from .quantized_linear_dynamic import register as _register_quantized_linear_dynamic
+
+_register_quantized_linear_dynamic()
