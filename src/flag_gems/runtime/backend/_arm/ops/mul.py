@@ -324,14 +324,29 @@ def mul(A, B):
         return torch.from_numpy(B.detach().numpy() * A)
 
     if isinstance(A, torch.Tensor) and isinstance(B, torch.Tensor):
-        if A.numel() >= B.numel():
-            out = torch.empty_like(A) if A.shape == torch.broadcast_shapes(A.shape, B.shape) else None
-            if out is not None and _try_mul_fastpath(A, B, out):
+        if A.shape == B.shape:
+            # Identical shapes: skip broadcast_shapes (saves ~7μs per call).
+            # A is always a valid lhs; try fastpath directly.
+            out = torch.empty_like(A)
+            if _try_mul_fastpath(A, B, out):
                 return out
-        if B.numel() > A.numel():
-            out = torch.empty_like(B) if B.shape == torch.broadcast_shapes(A.shape, B.shape) else None
-            if out is not None and _try_mul_fastpath(B, A, out):
-                return out
+        else:
+            # Compute broadcast shape exactly once and try both lhs orderings.
+            # Fix: original code used `B.numel() > A.numel()` (strict), which
+            # silently skipped the B-as-lhs branch when numel was equal but shapes
+            # differed (e.g. weight[1024] × hidden[1,1,1024]).  That caused a
+            # fallthrough to @pointwise_dynamic (~160μs) instead of the correct
+            # _launch_lastdim_vector_mul (~22μs).  Using `B.shape == broadcast_shape`
+            # handles the equal-numel broadcast case correctly.
+            broadcast_shape = torch.broadcast_shapes(A.shape, B.shape)
+            if A.shape == broadcast_shape:
+                out = torch.empty_like(A)
+                if _try_mul_fastpath(A, B, out):
+                    return out
+            if B.shape == broadcast_shape:
+                out = torch.empty_like(B)
+                if _try_mul_fastpath(B, A, out):
+                    return out
         return _mul_tensor_tensor_fallback(A, B)
     if isinstance(A, torch.Tensor):
         return _mul_tensor_scalar_fallback(A, B)
