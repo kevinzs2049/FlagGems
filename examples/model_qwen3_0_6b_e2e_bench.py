@@ -10,11 +10,11 @@ Qwen3-0.6B BF16 端到端 tok/s 对比：PyTorch 原生 vs FlagGems Triton-CPU
   有益 (√):  mm/addmm/bmm —— GEMM 形状大，Triton 收益 > 启动开销
              silu/softmax/sdpa —— 融合节省多次内存往返
              rsqrt/mean —— RMSNorm 组件，轻量
-             mul/mul_  —— RMSNorm weight 乘、SwiGLU gate, +3%
-                          (需 bool/int dtype guard，已在 mul.py 修复)
 
-  不启用 (×): add/add_  —— decode 残差 [1,1,1024]，56 次×9μs 启动 > 计算节省
-              patch_qwen3_rmsnorm() —— M=1 小张量 Triton 2-pass 比 ATen 慢
+  不启用 (×): mul/mul_  —— weight[1024] × hidden[1,1,1024] 广播走 @pointwise_dynamic
+                           ATen ~2μs(NEON) vs FlagGems ~20μs; 392 calls/token = -19%
+              add/add_  —— decode 残差 56 calls × overhead > 计算节省
+              patch_qwen3_rmsnorm() —— M=1 Triton 2-pass 比 ATen 5-op 分解慢
                                       prefill(M≥32) 时可考虑开启
 
 注意: flag_gems.enable() 全量注册与 transformers 生成循环存在兼容问题
@@ -55,10 +55,11 @@ FLAGGEMS_INCLUDE = [
     "scaled_dot_product_attention",
     "rsqrt", "rsqrt_",
     "mean", "mean_dim",
-    "mul", "mul_",        # RMSNorm weight scale, SwiGLU gate×up, RoPE rotate (+~3%)
-                          # Safe after bool/int dtype guard fix in mul.py
-    # "add", "add_",     # Residual: 56 calls × 9μs Triton overhead > savings for decode M=1
-    # patch_qwen3_rmsnorm() also omitted: 2-pass Triton slower than ATen for M=1 decode
+    # NOT included for decode (all three hurt decode performance due to Triton overhead):
+    # "mul", "mul_",     # weight[1024] × hidden[1,1,1024] → broadcast → @pointwise_dynamic
+    #                    # ATen ~2μs (NEON-optimized) vs FlagGems ~20μs; 392 calls/token = -19%
+    # "add", "add_",     # residual [1,1,1024]: 56 calls × overhead > compute savings
+    # patch_qwen3_rmsnorm()  # M=1 2-pass Triton slower than ATen 5-op decomposition
 ]
 
 
