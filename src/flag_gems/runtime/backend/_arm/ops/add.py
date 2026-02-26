@@ -702,13 +702,45 @@ def _maybe_prewarm_add_kernels():
 # due to kernel launch overhead (~50us) vs native (~2us for small tensors).
 _ADD_NATIVE_THRESHOLD = 4096
 
+# Dtypes that numpy natively handles (excludes bfloat16/float16 which numpy
+# doesn't support, and where the numpy fast path must be skipped).
+_ADD_NUMPY_DTYPES = frozenset(
+    [
+        torch.float32,
+        torch.float64,
+        torch.bool,
+        torch.uint8,
+        torch.int8,
+        torch.int16,
+        torch.int32,
+        torch.int64,
+    ]
+)
+
+
+def _numpy_alpha(dtype, alpha):
+    """Return alpha cast to a type that preserves tensor dtype in numpy arithmetic.
+
+    When a non-float numpy array is combined with a Python float, numpy promotes
+    the result to float64, silently changing dtype.  For integer/bool dtypes use
+    an integer alpha to avoid this promotion.
+    """
+    if dtype.is_floating_point:
+        return float(alpha)
+    return int(alpha)
+
 
 def add(A, B, *, alpha=1):
     logging.debug("GEMS_ARM ADD")
-    # Fast path: small contiguous tensors bypass Triton via numpy
+    # Fast path: small contiguous tensors bypass Triton via numpy.
+    # Gate on _ADD_NUMPY_DTYPES to avoid:
+    #   (a) calling .numpy() on bfloat16/float16 (unsupported by numpy)
+    #   (b) dtype promotion: int64_arr + float_scalar → float64 result
     if (
         isinstance(A, torch.Tensor)
         and isinstance(B, torch.Tensor)
+        and A.dtype in _ADD_NUMPY_DTYPES
+        and B.dtype in _ADD_NUMPY_DTYPES
         and A.numel() < _ADD_NATIVE_THRESHOLD
         and A.is_contiguous()
         and B.is_contiguous()
@@ -717,14 +749,16 @@ def add(A, B, *, alpha=1):
         bn = B.detach().numpy()
         if alpha == 1:
             return torch.from_numpy(np.add(an, bn))
-        return torch.from_numpy(np.add(an, np.multiply(bn, float(alpha))))
+        return torch.from_numpy(np.add(an, np.multiply(bn, _numpy_alpha(A.dtype, alpha))))
     if (
         isinstance(A, torch.Tensor)
         and not isinstance(B, torch.Tensor)
+        and A.dtype in _ADD_NUMPY_DTYPES
         and A.numel() < _ADD_NATIVE_THRESHOLD
         and A.is_contiguous()
     ):
-        return torch.from_numpy(A.detach().numpy() + B * float(alpha))
+        # Use int/float alpha matching tensor dtype to prevent numpy type promotion
+        return torch.from_numpy(A.detach().numpy() + B * _numpy_alpha(A.dtype, alpha))
     if _ADD_TRITON_ENABLED and _is_contiguous_add_3584_hotshape(A, B, alpha):
         out = torch.empty_like(A)
         _add_contiguous_3584_hot_alpha1_kernel[(1,)](

@@ -4,13 +4,21 @@ Qwen3-0.6B BF16 端到端 tok/s 对比：PyTorch 原生 vs FlagGems Triton-CPU
 测试配置 (CIX P1 CD8180, ARM64, OMP=8, 2026-02-26):
   PyTorch native : 5.24 tok/s
   FlagGems Triton: 5.88 tok/s  (+12%)
+  FlagGems +mul  : ~+3%（在 v1 基础上）
 
-启用的 FlagGems ops (only_enable):
-  mm, addmm, bmm, silu, softmax, scaled_dot_product_attention,
-  rsqrt, rsqrt_, mean, mean_dim
+算子选择说明（decode 路径，M=1 小张量）:
+  有益 (√):  mm/addmm/bmm —— GEMM 形状大，Triton 收益 > 启动开销
+             silu/softmax/sdpa —— 融合节省多次内存往返
+             rsqrt/mean —— RMSNorm 组件，轻量
+             mul/mul_  —— RMSNorm weight 乘、SwiGLU gate, +3%
+                          (需 bool/int dtype guard，已在 mul.py 修复)
+
+  不启用 (×): add/add_  —— decode 残差 [1,1,1024]，56 次×9μs 启动 > 计算节省
+              patch_qwen3_rmsnorm() —— M=1 小张量 Triton 2-pass 比 ATen 慢
+                                      prefill(M≥32) 时可考虑开启
 
 注意: flag_gems.enable() 全量注册与 transformers 生成循环存在兼容问题
-(mul/index/arange 等工具类 op 会破坏 cache_position 处理)，
+(index/arange 等工具类 op 会破坏 cache_position 处理)，
 建议使用 only_enable() 只注册计算类 kernel。
 
 用法:
@@ -47,6 +55,10 @@ FLAGGEMS_INCLUDE = [
     "scaled_dot_product_attention",
     "rsqrt", "rsqrt_",
     "mean", "mean_dim",
+    "mul", "mul_",        # RMSNorm weight scale, SwiGLU gate×up, RoPE rotate (+~3%)
+                          # Safe after bool/int dtype guard fix in mul.py
+    # "add", "add_",     # Residual: 56 calls × 9μs Triton overhead > savings for decode M=1
+    # patch_qwen3_rmsnorm() also omitted: 2-pass Triton slower than ATen for M=1 decode
 ]
 
 
@@ -119,6 +131,12 @@ def main():
     import flag_gems
     flag_gems.only_enable(include=FLAGGEMS_INCLUDE)
     print(f"\n[FlagGems] only_enable: {FLAGGEMS_INCLUDE}")
+
+    # NOTE: patch_qwen3_rmsnorm() is available but NOT applied here.
+    # For decode (M=1) the 2-pass Triton kernel is slower than ATen decomposition.
+    # For prefill (M≥32) it can be beneficial:
+    #   from flag_gems.runtime.backend._arm.fused import patch_qwen3_rmsnorm
+    #   patch_qwen3_rmsnorm()
 
     fg_tps = bench(model, tokenizer, input_ids, attention_mask, "FlagGems Triton")
 

@@ -126,6 +126,27 @@ def _mul_tensor_scalar_fallback(x, y):
     return x * y
 
 
+# Dtypes supported by the Triton mul kernels (floating-point only).
+_MUL_TRITON_DTYPES = frozenset(
+    [torch.float16, torch.bfloat16, torch.float32, torch.float64]
+)
+
+# Dtypes supported by numpy (excludes bfloat16 and float16).
+# Used to gate the small-tensor numpy fast path.
+_MUL_NUMPY_DTYPES = frozenset(
+    [
+        torch.float32,
+        torch.float64,
+        torch.bool,
+        torch.uint8,
+        torch.int8,
+        torch.int16,
+        torch.int32,
+        torch.int64,
+    ]
+)
+
+
 def _supported_fast_dtype(dtype: torch.dtype) -> bool:
     return dtype in (torch.bfloat16, torch.float32, torch.float64)
 
@@ -265,13 +286,41 @@ def _try_mul_fastpath(lhs: torch.Tensor, rhs: torch.Tensor, out: torch.Tensor) -
 def mul(A, B):
     logger.debug("GEMS MUL")
 
-    # Fast path: small contiguous tensors bypass Triton via numpy
+    # Dtype guard: Triton kernels only support floating-point types.
+    # bool / integer tensors (e.g. attention-mask prep in transformers) fall back
+    # to numpy, which handles all non-float dtypes and avoids re-entering the
+    # FlagGems dispatcher (no infinite recursion).
+    a_dtype = A.dtype if isinstance(A, torch.Tensor) else None
+    b_dtype = B.dtype if isinstance(B, torch.Tensor) else None
+    if (a_dtype is not None and a_dtype not in _MUL_TRITON_DTYPES) or (
+        b_dtype is not None and b_dtype not in _MUL_TRITON_DTYPES
+    ):
+        if isinstance(A, torch.Tensor) and isinstance(B, torch.Tensor):
+            return torch.from_numpy(
+                np.multiply(
+                    A.contiguous().detach().numpy(),
+                    B.contiguous().detach().numpy(),
+                )
+            )
+        if isinstance(A, torch.Tensor):
+            return torch.from_numpy(A.contiguous().detach().numpy() * B)
+        return torch.from_numpy(B.contiguous().detach().numpy() * A)
+
+    # Fast path: small contiguous tensors bypass Triton via numpy.
+    # Gate on _MUL_NUMPY_DTYPES to avoid calling .numpy() on bfloat16/float16,
+    # which numpy does not support.
     if isinstance(A, torch.Tensor) and isinstance(B, torch.Tensor):
-        if A.numel() < _MUL_NATIVE_THRESHOLD and B.numel() < _MUL_NATIVE_THRESHOLD and A.is_contiguous() and B.is_contiguous():
+        if (
+            A.dtype in _MUL_NUMPY_DTYPES
+            and A.numel() < _MUL_NATIVE_THRESHOLD
+            and B.numel() < _MUL_NATIVE_THRESHOLD
+            and A.is_contiguous()
+            and B.is_contiguous()
+        ):
             return torch.from_numpy(np.multiply(A.detach().numpy(), B.detach().numpy()))
-    elif isinstance(A, torch.Tensor) and A.numel() < _MUL_NATIVE_THRESHOLD and A.is_contiguous():
+    elif isinstance(A, torch.Tensor) and A.dtype in _MUL_NUMPY_DTYPES and A.numel() < _MUL_NATIVE_THRESHOLD and A.is_contiguous():
         return torch.from_numpy(A.detach().numpy() * B)
-    elif isinstance(B, torch.Tensor) and B.numel() < _MUL_NATIVE_THRESHOLD and B.is_contiguous():
+    elif isinstance(B, torch.Tensor) and B.dtype in _MUL_NUMPY_DTYPES and B.numel() < _MUL_NATIVE_THRESHOLD and B.is_contiguous():
         return torch.from_numpy(B.detach().numpy() * A)
 
     if isinstance(A, torch.Tensor) and isinstance(B, torch.Tensor):
@@ -294,8 +343,26 @@ def mul(A, B):
 def mul_(A, B):
     logger.debug("GEMS MUL_")
 
-    # Fast path: small contiguous tensors bypass Triton via numpy inplace
-    if isinstance(A, torch.Tensor) and A.numel() < _MUL_NATIVE_THRESHOLD and A.is_contiguous():
+    # Dtype guard: non-float A (bool, int*) falls back to numpy in-place.
+    if isinstance(A, torch.Tensor) and A.dtype not in _MUL_TRITON_DTYPES:
+        if isinstance(B, torch.Tensor):
+            result = np.multiply(
+                A.contiguous().detach().numpy(),
+                B.contiguous().detach().numpy(),
+            )
+            A.copy_(torch.from_numpy(result))
+        else:
+            A.copy_(torch.from_numpy(A.contiguous().detach().numpy() * B))
+        return A
+
+    # Fast path: small contiguous float32/float64 tensors via numpy inplace.
+    # Gate on _MUL_NUMPY_DTYPES (excludes bfloat16/float16).
+    if (
+        isinstance(A, torch.Tensor)
+        and A.dtype in _MUL_NUMPY_DTYPES
+        and A.numel() < _MUL_NATIVE_THRESHOLD
+        and A.is_contiguous()
+    ):
         an = A.detach().numpy()
         if isinstance(B, torch.Tensor) and B.is_contiguous():
             np.multiply(an, B.detach().numpy(), out=an)
