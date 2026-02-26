@@ -1,10 +1,15 @@
 """
 Qwen3-0.6B BF16 端到端 tok/s 对比：PyTorch 原生 vs FlagGems Triton-CPU
 
-测试配置 (CIX P1 CD8180, ARM64, OMP=8, 2026-02-26):
-  PyTorch native : 5.24 tok/s
-  FlagGems Triton: 5.88 tok/s  (+12%)
-  FlagGems +mul  : ~+3%（在 v1 基础上）
+测试配置 (CIX P1 CD8180, ARM64, 2026-02-26):
+  PyTorch native  OMP=8 : 4.82 tok/s
+  FlagGems Triton OMP=1 : 5.95 tok/s  (+23%)
+
+关键发现 — OMP 线程数不对称:
+  Baseline (ATen)       : OMP=6-8 最优（利用多核 NEON）
+  FlagGems (Triton-CPU) : OMP=1-2 最优（Triton 通过 launch grid 管理并行；
+                          额外 OMP 线程只带来调度开销，无益于 kernel 吞吐）
+  OMP=8 下 FlagGems 仅 +5%；OMP=1 下 FlagGems +23%。
 
 算子选择说明（decode 路径，M=1 小张量）:
   有益 (√):  mm/addmm/bmm —— GEMM 形状大，Triton 收益 > 启动开销
@@ -25,7 +30,7 @@ Qwen3-0.6B BF16 端到端 tok/s 对比：PyTorch 原生 vs FlagGems Triton-CPU
   # 仅基线
   OMP_NUM_THREADS=8 python model_qwen3_0_6b_e2e_bench.py --baseline-only
 
-  # 基线 + FlagGems 对比
+  # 基线 + FlagGems 对比（默认 baseline-omp=8, flaggems-omp=1）
   OMP_NUM_THREADS=8 python model_qwen3_0_6b_e2e_bench.py
 """
 
