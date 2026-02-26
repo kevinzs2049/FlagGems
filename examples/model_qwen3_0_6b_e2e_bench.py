@@ -100,10 +100,16 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--baseline-only", action="store_true")
     parser.add_argument("--flaggems-src", default="/home/kevin/FlagGems-rebase/FlagGems/src")
+    # OMP tuning: Baseline (ATen) peaks at OMP=6-8; FlagGems (Triton) peaks at OMP=1-2.
+    # Triton-CPU manages its own kernel parallelism via the launch grid; extra OMP threads
+    # cause scheduling overhead without benefiting Triton kernels.
+    parser.add_argument("--baseline-omp", type=int, default=8,
+                        help="OMP threads for PyTorch baseline (default=8, optimal ~6-8)")
+    parser.add_argument("--flaggems-omp", type=int, default=1,
+                        help="OMP threads for FlagGems Triton (default=1, optimal ~1-2)")
     args = parser.parse_args()
 
-    omp = int(os.environ.get("OMP_NUM_THREADS", 8))
-    print(f"OMP_NUM_THREADS={omp}  MODEL={MODEL_PATH}")
+    print(f"MODEL={MODEL_PATH}")
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)
     input_ids = tokenizer(PROMPT, return_tensors="pt")["input_ids"]
@@ -117,21 +123,26 @@ def main():
     model.eval()
     print(f"Model loaded in {time.perf_counter()-t0:.1f}s")
 
-    # --- Baseline ---
+    # --- Baseline (ATen, optimal OMP=6-8) ---
+    torch.set_num_threads(args.baseline_omp)
+    print(f"\n[Baseline] OMP={args.baseline_omp}")
     baseline_tps = bench(model, tokenizer, input_ids, attention_mask, "PyTorch native")
 
     if args.baseline_only:
         print(f"\n{'='*55}")
-        print(f"  PyTorch native  OMP={omp}  {baseline_tps:.2f} tok/s")
+        print(f"  PyTorch native  OMP={args.baseline_omp}  {baseline_tps:.2f} tok/s")
         print(f"{'='*55}")
         return
 
-    # --- FlagGems ---
+    # --- FlagGems (Triton, optimal OMP=1-2) ---
+    # Triton-CPU kernels run their own parallelism via launch grid; extra OMP threads
+    # add scheduling overhead without improving kernel throughput for decode M=1.
+    torch.set_num_threads(args.flaggems_omp)
     if args.flaggems_src not in sys.path:
         sys.path.insert(0, args.flaggems_src)
     import flag_gems
     flag_gems.only_enable(include=FLAGGEMS_INCLUDE)
-    print(f"\n[FlagGems] only_enable: {FLAGGEMS_INCLUDE}")
+    print(f"\n[FlagGems] OMP={args.flaggems_omp}  only_enable: {FLAGGEMS_INCLUDE}")
 
     # NOTE: patch_qwen3_rmsnorm() is available but NOT applied here.
     # For decode (M=1) the 2-pass Triton kernel is slower than ATen decomposition.
@@ -142,9 +153,9 @@ def main():
     fg_tps = bench(model, tokenizer, input_ids, attention_mask, "FlagGems Triton")
 
     print(f"\n{'='*55}")
-    print(f"  OMP={omp}  N_TOKENS={N_TOKENS}  N_RUNS={N_RUNS}")
-    print(f"  PyTorch native : {baseline_tps:.2f} tok/s")
-    print(f"  FlagGems Triton: {fg_tps:.2f} tok/s  ({fg_tps/baseline_tps:.2f}x)")
+    print(f"  N_TOKENS={N_TOKENS}  N_RUNS={N_RUNS}")
+    print(f"  PyTorch native (OMP={args.baseline_omp}): {baseline_tps:.2f} tok/s")
+    print(f"  FlagGems Triton (OMP={args.flaggems_omp}): {fg_tps:.2f} tok/s  ({fg_tps/baseline_tps:.2f}x)")
     print(f"{'='*55}")
 
 
