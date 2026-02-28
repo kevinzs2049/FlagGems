@@ -15,6 +15,78 @@ DEFAULT_PROMPTS = [
     "Write a short poem about autumn moonlight.",
 ]
 
+MODULE_PATCH_SPECS = [
+    (
+        ["vllm.model_executor.layers.layernorm"],
+        "RMSNorm",
+        "forward_cuda",
+        "custom_gems_rms_forward_cuda",
+    ),
+    (
+        ["vllm.model_executor.layers.rotary_embedding"],
+        "RotaryEmbedding",
+        "forward_cuda",
+        "custom_gems_rope_forward_cuda",
+    ),
+    (
+        ["vllm.attention.ops.paged_attn", "vllm.v1.attention.ops.paged_attn"],
+        "PagedAttention",
+        "write_to_paged_cache",
+        "custom_gems_write_to_paged_cache",
+    ),
+    (
+        ["vllm.model_executor.layers.activation"],
+        "SiluAndMul",
+        "forward_cuda",
+        "custom_gems_silu_and_mul",
+    ),
+    (
+        ["vllm.v1.attention.backends.mla.triton_mla"],
+        "TritonMLAImpl",
+        "_forward_decode",
+        "custom_gems_flash_mla_forward",
+    ),
+    (
+        ["vllm.v1.attention.backends.flash_attn"],
+        "FlashAttentionImpl",
+        "forward",
+        "custom_gems_flash_attention_impl_forward",
+    ),
+    (
+        ["vllm.v1.attention.backends.mla.flashattn_mla"],
+        "FlashAttnMLAImpl",
+        "_forward_decode",
+        "custom_gems_flashattn_mla_forward_decode",
+    ),
+]
+
+LIB_PATCH_SPECS = [
+    ("_C", "silu_and_mul", "custom_silu_and_mul"),
+    ("_C", "cutlass_scaled_mm", "custom_cutlass_scaled_mm"),
+    ("_moe_C", "moe_align_block_size", "custom_moe_align_block_size"),
+    ("_moe_C", "topk_softmax", "custom_topk_softmax"),
+    ("_moe_C", "moe_sum", "custom_moe_sum"),
+    ("_vllm_fa3_C", "get_scheduler_metadata", "custom_get_scheduler_metadata"),
+    ("_moe_C", "grouped_topk", "custom_moe_grouped_topk"),
+    ("_C", "per_token_group_fp8_quant", "custom_per_token_group_fp8_quant"),
+    ("_C", "apply_repetition_penalties_", "custom_apply_repetition_penalties"),
+    ("_C_cache_ops", "concat_and_cache_mla", "custom_concat_and_cache_mla"),
+]
+
+TRACEABLE_PATCH_FUNCS = sorted(
+    {spec[3] for spec in MODULE_PATCH_SPECS} | {spec[2] for spec in LIB_PATCH_SPECS}
+)
+
+FLAGGEMS_VLLM_WORKER_EXTENSION = (
+    "flag_gems.patches.vllm_worker_extension.FlagGemsVllmWorkerExtension"
+)
+ENV_WORKER_AUTO_PATCH = "FLAGGEMS_VLLM_WORKER_AUTO_PATCH"
+ENV_WORKER_USE_ATEN = "FLAGGEMS_VLLM_WORKER_USE_ATEN"
+ENV_WORKER_USE_PATCH = "FLAGGEMS_VLLM_WORKER_USE_PATCH"
+ENV_WORKER_REGISTER_MODE = "FLAGGEMS_VLLM_WORKER_REGISTER_MODE"
+ENV_WORKER_EXCLUDE_OPS = "FLAGGEMS_VLLM_WORKER_EXCLUDE_OPS"
+ENV_WORKER_PATCH_VERBOSE = "FLAGGEMS_VLLM_WORKER_PATCH_VERBOSE"
+
 
 def _parse_ops_csv(raw):
     return [item.strip() for item in raw.split(",") if item.strip()]
@@ -167,6 +239,11 @@ def _build_parser():
         ),
     )
     parser.add_argument(
+        "--output-json",
+        default=os.getenv("VLLM_BENCH_OUTPUT_JSON", ""),
+        help="Optional path to save aggregate benchmark/audit JSON from parent process.",
+    )
+    parser.add_argument(
         "--child-mode",
         default=None,
         help=argparse.SUPPRESS,
@@ -262,6 +339,146 @@ def _collect_coverage(prof, register_cls):
     }
 
 
+def _collect_profiler_summary(prof, top_k=120):
+    rows = []
+    category_self_ms = Counter()
+    for evt in prof.key_averages():
+        key = evt.key
+        self_ms = float(evt.self_cpu_time_total) / 1000.0
+        total_ms = float(evt.cpu_time_total) / 1000.0
+        count = int(evt.count)
+        if key.startswith("aten::"):
+            category = "aten"
+        elif key.startswith("flag_gems::"):
+            category = "flag_gems_custom"
+        elif key.startswith("vllm::"):
+            category = "vllm_custom"
+        else:
+            category = "other"
+        category_self_ms[category] += self_ms
+        rows.append(
+            {
+                "key": key,
+                "count": count,
+                "self_cpu_ms": round(self_ms, 4),
+                "cpu_total_ms": round(total_ms, 4),
+                "category": category,
+            }
+        )
+    rows.sort(key=lambda x: x["self_cpu_ms"], reverse=True)
+    return {
+        "top_ops": rows[:top_k],
+        "category_self_cpu_ms": {
+            k: round(v, 4) for k, v in sorted(category_self_ms.items())
+        },
+    }
+
+
+def _optional_import_attr(module_name, attr_name):
+    try:
+        module = __import__(module_name, fromlist=[attr_name])
+        return getattr(module, attr_name)
+    except Exception:
+        return None
+
+
+def _optional_import_first(candidates, attr_name):
+    for module_name in candidates:
+        obj = _optional_import_attr(module_name, attr_name)
+        if obj is not None:
+            return obj, module_name
+    return None, None
+
+
+def _prepare_vllm_patch_trace():
+    import flag_gems.patches.patch_vllm_all as patch_mod
+
+    counter = Counter()
+    wrapped = {}
+    for fn_name in TRACEABLE_PATCH_FUNCS:
+        original = getattr(patch_mod, fn_name, None)
+        if original is None:
+            continue
+
+        @functools.wraps(original)
+        def _wrapped(*args, __fn=original, __name=fn_name, **kwargs):
+            counter[__name] += 1
+            return __fn(*args, **kwargs)
+
+        setattr(patch_mod, fn_name, _wrapped)
+        wrapped[fn_name] = _wrapped
+    return {"counter": counter, "wrapped": wrapped}
+
+
+def _collect_vllm_patch_evidence(trace_state, dispatch_key):
+    evidence = {
+        "module_patch_installation": [],
+        "lib_patch_dispatch_bound": [],
+        "patch_fn_call_counts": {},
+    }
+    wrapped = trace_state.get("wrapped", {})
+
+    for module_candidates, cls_name, method_name, fn_name in MODULE_PATCH_SPECS:
+        cls, module_name = _optional_import_first(module_candidates, cls_name)
+        if cls is None:
+            evidence["module_patch_installation"].append(
+                {
+                    "target": f"{module_candidates[0]}.{cls_name}.{method_name}",
+                    "status": "missing",
+                    "patched_to_expected": False,
+                    "resolved_module": None,
+                    "expected_wrapper": fn_name,
+                }
+            )
+            continue
+        current = getattr(cls, method_name, None)
+        expected = wrapped.get(fn_name)
+        patched = expected is not None and current is expected
+        evidence["module_patch_installation"].append(
+            {
+                "target": f"{module_name}.{cls_name}.{method_name}",
+                "status": "ok",
+                "patched_to_expected": bool(patched),
+                "resolved_module": module_name,
+                "expected_wrapper": fn_name,
+                "current_qualname": getattr(current, "__qualname__", str(current)),
+            }
+        )
+
+    import torch
+
+    has_kernel_api = hasattr(torch._C, "_dispatch_has_kernel_for_dispatch_key")
+    for lib_name, op_name, fn_name in LIB_PATCH_SPECS:
+        qualified = f"{lib_name}::{op_name}"
+        bound = None
+        err = None
+        try:
+            if has_kernel_api:
+                bound = bool(
+                    torch._C._dispatch_has_kernel_for_dispatch_key(
+                        qualified, dispatch_key
+                    )
+                )
+            else:
+                table = torch._C._dispatch_dump_table(qualified)
+                bound = dispatch_key in table
+        except Exception as exc:
+            err = str(exc)
+        evidence["lib_patch_dispatch_bound"].append(
+            {
+                "target": qualified,
+                "dispatch_key": dispatch_key,
+                "bound": bound,
+                "expected_wrapper": fn_name,
+                "error": err,
+            }
+        )
+
+    for fn_name in TRACEABLE_PATCH_FUNCS:
+        evidence["patch_fn_call_counts"][fn_name] = int(trace_state["counter"].get(fn_name, 0))
+    return evidence
+
+
 def _run_single_mode(args, mode):
     prompts = _normalize_prompts(args.prompts)
     gems_exclude_ops = _parse_ops_csv(args.gems_exclude_ops)
@@ -273,11 +490,18 @@ def _run_single_mode(args, mode):
     register_mode = args.gems_register_mode
     register_all = register_mode == "all"
     coverage = None
+    patch_trace_state = None
+    worker_patch_apply_status = None
+    worker_patch_final_status = None
+    use_aten = False
+    use_patch = False
+    worker_auto_patch_before_warmup = False
 
     if mode != "ref":
         import flag_gems
 
         if mode in {"gems_aten", "gems_full"}:
+            use_aten = True
             register_cls = _make_register_class(
                 use_all_ops=register_all,
                 with_counter=args.audit_coverage,
@@ -287,6 +511,9 @@ def _run_single_mode(args, mode):
                 register_cls.clear_counters()
             flag_gems.enable(unused=exclude_setting, registrar=register_cls)
         if mode in {"gems_patch_only", "gems_full"}:
+            use_patch = True
+            if args.audit_coverage:
+                patch_trace_state = _prepare_vllm_patch_trace()
             flag_gems.apply_gems_patches_to_vllm(verbose=args.patch_verbose)
 
     _ensure_vllm_tracer_symbol()
@@ -306,10 +533,56 @@ def _run_single_mode(args, mode):
         "enforce_eager": args.enforce_eager,
         "trust_remote_code": args.trust_remote_code,
     }
+    if mode != "ref":
+        # CPU backend executes model code in spawned worker processes.
+        # Inject worker extension so we can apply/verify FlagGems from workers.
+        llm_kwargs["worker_extension_cls"] = FLAGGEMS_VLLM_WORKER_EXTENSION
     if args.dtype and args.dtype != "auto":
         llm_kwargs["dtype"] = args.dtype
 
+    env_backup = {}
+    if mode != "ref":
+        worker_auto_patch_before_warmup = _env_flag(
+            "VLLM_WORKER_AUTO_PATCH_BEFORE_WARMUP", args.enforce_eager
+        )
+        worker_env = {
+            ENV_WORKER_AUTO_PATCH: "1" if worker_auto_patch_before_warmup else "0",
+            ENV_WORKER_USE_ATEN: "1" if use_aten else "0",
+            ENV_WORKER_USE_PATCH: "1" if use_patch else "0",
+            ENV_WORKER_REGISTER_MODE: register_mode,
+            ENV_WORKER_EXCLUDE_OPS: ",".join(gems_exclude_ops),
+            ENV_WORKER_PATCH_VERBOSE: "1" if args.patch_verbose else "0",
+        }
+        for key, value in worker_env.items():
+            env_backup[key] = os.environ.get(key)
+            os.environ[key] = value
+
     llm = LLM(**llm_kwargs)
+
+    if mode != "ref":
+        try:
+            if worker_auto_patch_before_warmup:
+                worker_patch_apply_status = llm.llm_engine.collective_rpc(
+                    "flaggems_collect_patch_audit"
+                )
+            else:
+                worker_patch_apply_status = llm.llm_engine.collective_rpc(
+                    "flaggems_apply_and_audit",
+                    kwargs={
+                        "use_aten": use_aten,
+                        "use_patch": use_patch,
+                        "register_mode": register_mode,
+                        "exclude_ops": gems_exclude_ops,
+                        "verbose": args.patch_verbose,
+                    },
+                )
+        except Exception as exc:
+            worker_patch_apply_status = {"error": str(exc)}
+        for key, old_val in env_backup.items():
+            if old_val is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old_val
 
     for _ in range(args.warmup):
         llm.generate(prompts, sampling_params)
@@ -340,12 +613,43 @@ def _run_single_mode(args, mode):
         ) as prof:
             llm.generate(prompts, sampling_params)
         coverage = _collect_coverage(prof, register_cls)
+        coverage["profiler"] = _collect_profiler_summary(prof)
+        if not coverage["profiler"]["top_ops"]:
+            coverage["profiler"]["note"] = (
+                "No CPU events captured in this process. "
+                "For vLLM CPU, model execution may run in spawned worker processes."
+            )
         if register_cls is not None:
             coverage["flaggems_registered_key_count"] = len(
                 flag_gems.all_registered_keys()
             )
         else:
             coverage["flaggems_registered_key_count"] = 0
+        if patch_trace_state is not None:
+            coverage["vllm_patch_evidence"] = _collect_vllm_patch_evidence(
+                patch_trace_state,
+                flag_gems.runtime.device.dispatch_key,
+            )
+        try:
+            worker_patch_final_status = llm.llm_engine.collective_rpc(
+                "flaggems_collect_patch_audit"
+            )
+        except Exception as exc:
+            worker_patch_final_status = {"error": str(exc)}
+        if (
+            isinstance(worker_patch_final_status, list)
+            and worker_patch_final_status
+            and not args.enforce_eager
+        ):
+            calls = worker_patch_final_status[0].get("patch_fn_call_counts", {})
+            if calls and not any(v > 0 for v in calls.values()):
+                worker_patch_final_status[0]["note"] = (
+                    "Patch installed but no patch calls observed. "
+                    "With CPU spawn workers, warmup/compile may happen before patch RPC; "
+                    "try --enforce-eager for runtime call validation."
+                )
+        coverage["worker_patch_apply_status"] = worker_patch_apply_status
+        coverage["worker_patch_final_status"] = worker_patch_final_status
 
     result = {
         "mode": mode,
@@ -476,6 +780,81 @@ def _run_parent(args):
             print(
                 f"{row['mode']}: uncovered_aten={','.join(cov['uncovered_aten_bases'][:60])}"
             )
+            patch_ev = cov.get("vllm_patch_evidence")
+            if patch_ev:
+                module_ok = sum(
+                    1
+                    for item in patch_ev["module_patch_installation"]
+                    if item["patched_to_expected"]
+                )
+                module_total = len(patch_ev["module_patch_installation"])
+                lib_ok = sum(
+                    1
+                    for item in patch_ev["lib_patch_dispatch_bound"]
+                    if item["bound"] is True
+                )
+                lib_total = len(patch_ev["lib_patch_dispatch_bound"])
+                print(
+                    f"{row['mode']}: vllm_patch module_ok={module_ok}/{module_total} "
+                    f"lib_dispatch_bound={lib_ok}/{lib_total}"
+                )
+                hot_patch = sorted(
+                    patch_ev["patch_fn_call_counts"].items(),
+                    key=lambda x: x[1],
+                    reverse=True,
+                )[:12]
+                print(
+                    f"{row['mode']}: vllm_patch_call_top={','.join(f'{k}:{v}' for k, v in hot_patch if v > 0)}"
+                )
+            worker_status = cov.get("worker_patch_final_status")
+            if isinstance(worker_status, list) and worker_status:
+                ws = worker_status[0]
+                active_module_items = [
+                    item
+                    for item in ws.get("module_patch_installation", [])
+                    if item.get("expected_active", True)
+                ]
+                module_ok = sum(
+                    1
+                    for item in active_module_items
+                    if item.get("patched_to_expected")
+                )
+                module_total = len(active_module_items)
+                active_lib_items = [
+                    item
+                    for item in ws.get("lib_patch_dispatch_bound", [])
+                    if item.get("expected_active", True)
+                ]
+                lib_ok = sum(
+                    1
+                    for item in active_lib_items
+                    if item.get("bound") is True
+                )
+                lib_total = len(active_lib_items)
+                print(
+                    f"{row['mode']}: worker_patch module_ok={module_ok}/{module_total} "
+                    f"lib_dispatch_bound={lib_ok}/{lib_total}"
+                )
+                worker_hot = sorted(
+                    ws.get("patch_fn_call_counts", {}).items(),
+                    key=lambda x: x[1],
+                    reverse=True,
+                )[:12]
+                print(
+                    f"{row['mode']}: worker_patch_call_top={','.join(f'{k}:{v}' for k, v in worker_hot if v > 0)}"
+                )
+            elif worker_status:
+                print(f"{row['mode']}: worker_patch_error={worker_status}")
+
+    if args.output_json:
+        payload = {
+            "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "args": vars(args),
+            "results": results,
+        }
+        with open(args.output_json, "w") as f:
+            json.dump(payload, f, indent=2, sort_keys=True)
+        print(f"\n[vllm-bench] wrote json: {args.output_json}")
 
 
 def main():

@@ -313,6 +313,9 @@ def addmm(bias, mat1, mat2, *, beta=1, alpha=1):
         or mat2.dtype is torch.bfloat16
         or bias.dtype is torch.bfloat16
     )
+    # Always cast bf16 to fp32 for the generic kernel: masked_load on bf16
+    # (v8bf16) is not supported in the AArch64 LLVM backend and causes a
+    # fatal "Cannot select" error.  The M=1 fastpath handles bf16 the same way.
     mat1_kernel = mat1.to(torch.float32) if use_fp32_generic else mat1
     mat2_kernel = mat2.to(torch.float32) if use_fp32_generic else mat2
     bias_kernel = bias.to(torch.float32) if use_fp32_generic else bias
@@ -397,6 +400,7 @@ def addmm_out(bias, mat1, mat2, *, beta=1, alpha=1, out=None):
         or mat2.dtype is torch.bfloat16
         or bias.dtype is torch.bfloat16
     )
+    # Always cast bf16 to fp32: see comment in addmm() above.
     mat1_kernel = mat1.to(torch.float32) if use_fp32_generic else mat1
     mat2_kernel = mat2.to(torch.float32) if use_fp32_generic else mat2
     bias_kernel = bias.to(torch.float32) if use_fp32_generic else bias

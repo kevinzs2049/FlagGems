@@ -26,6 +26,13 @@ from flag_gems.config import use_c_extension
 
 logger = logging.getLogger(__name__)
 
+def _safe_debug(msg: str) -> None:
+    # Avoid Dynamo graph breaks from logger calls in compile path.
+    if torch.compiler.is_compiling():
+        return
+    logger.debug(msg)
+
+
 __all__ = [
     "gems_rope_forward",
     "GemsDeepseekYarnRoPE",
@@ -43,7 +50,7 @@ def gems_rope_forward(
     inplace: bool = False,
 ) -> Union[torch.Tensor, torch.Tensor]:
     if use_c_extension:
-        logger.debug("GEMS CUSTOM ROPE FORWARD(C EXTENSION)")
+        _safe_debug("GEMS CUSTOM ROPE FORWARD(C EXTENSION)")
         if inplace:
             torch.ops.flag_gems.rotary_embedding_inplace(
                 query, key, cos, sin, position_ids, rotary_interleaved
@@ -54,7 +61,7 @@ def gems_rope_forward(
                 query, key, cos, sin, position_ids, rotary_interleaved
             )
     else:
-        logger.debug("GEMS CUSTOM ROPE FORWARD")
+        _safe_debug("GEMS CUSTOM ROPE FORWARD")
         # Fallback to pure python implementation
         return flag_gems.apply_rotary_pos_emb(
             query, key, cos, sin, position_ids, rotary_interleaved, inplace

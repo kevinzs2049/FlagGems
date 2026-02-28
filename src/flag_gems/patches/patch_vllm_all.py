@@ -603,51 +603,75 @@ def apply_gems_patches_to_vllm(verbose=True):
     )
 
     dispatch_key = flag_gems.runtime.device.dispatch_key
+    is_cpu = dispatch_key == "CPU"
 
+    # --- Module-level patches ---
+    # On CPU, vLLM dispatches via forward -> forward_cpu (not forward_cuda).
+    # We patch "forward" directly so FlagGems intercepts both CPU and GPU paths.
+    # On GPU, we keep patching "forward_cuda" to preserve the original behavior.
     module_patches = []
     if RMSNorm is not None:
-        module_patches.append((RMSNorm, "forward_cuda", custom_gems_rms_forward_cuda))
+        target = "forward" if is_cpu else "forward_cuda"
+        module_patches.append((RMSNorm, target, custom_gems_rms_forward_cuda))
     if RotaryEmbedding is not None:
+        target = "forward" if is_cpu else "forward_cuda"
         module_patches.append(
-            (RotaryEmbedding, "forward_cuda", custom_gems_rope_forward_cuda)
+            (RotaryEmbedding, target, custom_gems_rope_forward_cuda)
         )
     if PagedAttention is not None:
         module_patches.append(
             (PagedAttention, "write_to_paged_cache", custom_gems_write_to_paged_cache)
         )
     if SiluAndMul is not None:
-        module_patches.append((SiluAndMul, "forward_cuda", custom_gems_silu_and_mul))
-    if TritonMLAImpl is not None:
-        module_patches.append(
-            (TritonMLAImpl, "_forward_decode", custom_gems_flash_mla_forward)
-        )
-    if FlashAttentionImpl is not None:
-        module_patches.append(
-            (FlashAttentionImpl, "forward", custom_gems_flash_attention_impl_forward)
-        )
-    if FlashAttnMLAImpl is not None:
-        module_patches.append(
-            (
-                FlashAttnMLAImpl,
-                "_forward_decode",
-                custom_gems_flashattn_mla_forward_decode,
+        target = "forward" if is_cpu else "forward_cuda"
+        module_patches.append((SiluAndMul, target, custom_gems_silu_and_mul))
+
+    # GPU-only patches: MLA, FlashAttention (skip on CPU)
+    if not is_cpu:
+        if TritonMLAImpl is not None:
+            module_patches.append(
+                (TritonMLAImpl, "_forward_decode", custom_gems_flash_mla_forward)
             )
-        )
+        if FlashAttentionImpl is not None:
+            module_patches.append(
+                (FlashAttentionImpl, "forward", custom_gems_flash_attention_impl_forward)
+            )
+        if FlashAttnMLAImpl is not None:
+            module_patches.append(
+                (
+                    FlashAttnMLAImpl,
+                    "_forward_decode",
+                    custom_gems_flashattn_mla_forward_decode,
+                )
+            )
+    elif verbose:
+        print("[FlagGems][vLLM patch] CPU mode: skipping GPU-only attention patches")
+
     for cls, method_name, new_method in module_patches:
         patch_module_method(cls, method_name, new_method, verbose)
 
+    # --- Library-level patches ---
+    # Common patches (work on both CPU and GPU)
     lib_patches = [
         ("_C", "silu_and_mul", custom_silu_and_mul),
-        ("_C", "cutlass_scaled_mm", custom_cutlass_scaled_mm),
-        ("_moe_C", "moe_align_block_size", custom_moe_align_block_size),
-        ("_moe_C", "topk_softmax", custom_topk_softmax),
-        ("_moe_C", "moe_sum", custom_moe_sum),
-        ("_vllm_fa3_C", "get_scheduler_metadata", custom_get_scheduler_metadata),
-        ("_moe_C", "grouped_topk", custom_moe_grouped_topk),
-        ("_C", "per_token_group_fp8_quant", custom_per_token_group_fp8_quant),
         ("_C", "apply_repetition_penalties_", custom_apply_repetition_penalties),
-        ("_C_cache_ops", "concat_and_cache_mla", custom_concat_and_cache_mla),
     ]
+    # GPU-only lib patches (quantization, MoE, FA3 scheduler, etc.)
+    if not is_cpu:
+        lib_patches.extend([
+            ("_C", "cutlass_scaled_mm", custom_cutlass_scaled_mm),
+            ("_C", "per_token_group_fp8_quant", custom_per_token_group_fp8_quant),
+            ("_moe_C", "moe_align_block_size", custom_moe_align_block_size),
+            ("_moe_C", "topk_softmax", custom_topk_softmax),
+            ("_moe_C", "moe_sum", custom_moe_sum),
+            ("_vllm_fa3_C", "get_scheduler_metadata", custom_get_scheduler_metadata),
+            ("_moe_C", "grouped_topk", custom_moe_grouped_topk),
+            ("_C_cache_ops", "concat_and_cache_mla", custom_concat_and_cache_mla),
+        ])
+    elif verbose:
+        print("[FlagGems][vLLM patch] CPU mode: skipping GPU-only lib patches "
+              "(cutlass_scaled_mm, fp8_quant, MoE, FA3, MLA cache)")
+
     for lib_name, fn_name, fn in lib_patches:
         patch_vllm_lib(lib_name, fn_name, fn, dispatch_key, verbose)
 
