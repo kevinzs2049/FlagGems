@@ -42,6 +42,25 @@ CUSTOMIZED_UNUSED_OPS = (
     "silu",
     "silu_",
     "zero_",
+    # Random number ops - CPU has no torch.cpu.default_generators
+    "dropout",
+    "exponential_",
+    "multinomial",
+    "normal",
+    "normal_",
+    "normal_tensor_tensor",
+    "normal_tensor_float",
+    "normal_float_tensor",
+    "rand",
+    "rand_like",
+    "randn",
+    "randn_like",
+    "randperm",
+    "uniform_",
+    # Attention ops with autotune cause non-deterministic behavior on CPU
+    "scaled_dot_product_attention",
+    "scaled_dot_product_attention_forward",
+    "scaled_dot_product_attention_backward",
 )
 
 

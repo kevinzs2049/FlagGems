@@ -49,10 +49,14 @@ def patch_class(cls) -> bool:
     """Replace cls.forward with the fused kernel. Returns True if patched."""
     if cls in _PATCHED_CLASSES:
         return False
-    # Minimal duck-type check: must have weight and variance_epsilon
-    if not (hasattr(cls, "weight") or "weight" in getattr(cls, "__annotations__", {})):
-        logger.debug("patch_class: %s has no 'weight', skipping", cls.__name__)
-        return False
+    # Check if this looks like an RMSNorm class (has variance_epsilon in __init__)
+    # weight and variance_epsilon are instance attributes set in __init__
+    init_sig = getattr(cls.__init__, "__signature__", None)
+    if init_sig:
+        params = list(init_sig.parameters.keys())
+        if "variance_epsilon" not in params:
+            logger.debug("patch_class: %s has no variance_epsilon param, skipping", cls.__name__)
+            return False
     cls._original_forward = cls.forward
     cls.forward = _make_triton_forward(cls.__name__)
     _PATCHED_CLASSES.add(cls)
