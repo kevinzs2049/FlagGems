@@ -33,14 +33,13 @@ MM_M1_CONFIG_TABLE = (
 )
 
 MM_M1_TRANSPOSED_CONFIG_TABLE = (
-    # Decode vocab projection with transposed RHS benefits from wider K tiles.
-    {"n_min": 65536, "k_min": 0, "k_max": 1536, "config": (8, 32)},
-    # M=1 FC hotspots with K~=1024.
-    {"n_min": 4096, "k_min": 0, "k_max": 1536, "config": (16, 16)},
-    {"n_min": 2048, "k_min": 0, "k_max": 1536, "config": (32, 16)},
-    # K-heavy projections in FFN blocks.
-    {"n_min": 0, "k_min": 2048, "config": (16, 32)},
-    {"n_min": 0, "k_min": 0, "config": (8, 32)},
+    # Large vocab projection (lm_head N~=152k): BN=2 for fine-grained OMP
+    # load balancing; BK=64 fills a full 64-byte cache line per K-step.
+    # Tuned on CIX P1 aarch64 (2026-03-04): 30ms vs ATen 65ms (2.17x faster).
+    {"n_min": 65536, "k_min": 0, "k_max": 1536, "config": (2, 64)},
+    {"n_min": 2048, "k_min": 0, "k_max": 1536, "config": (4, 64)},
+    {"n_min": 0, "k_min": 2048, "config": (4, 64)},
+    {"n_min": 0, "k_min": 0, "config": (4, 64)},
 )
 
 _MM_PREPACK_CACHE = OrderedDict()

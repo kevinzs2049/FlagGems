@@ -1,52 +1,34 @@
 """
 Qwen3-0.6B BF16 端到端 tok/s 对比：PyTorch 原生 vs FlagGems Triton-CPU
 
-测试配置 (CIX P1 CD8180, ARM64, 2026-02-27, performance governor 必须预先设置):
-  短 prompt (8 tok, 20 new)  N_RUNS=5, 30s cooldown:
-    PyTorch native  OMP=8 taskset 8 big-core : 5.61 tok/s  (baseline)
-    PyTorch native  OMP=6 taskset 6 big-core : 5.86 tok/s  (同等绑核 baseline; 6核>8核因cores8,9慢)
-    FlagGems Triton OMP=6 taskset 6 big-core : 6.41 tok/s  (+9% vs 同等绑核 / +14% vs 8核基线)
-  128-token prompt (126 tok, 50 new):
-    PyTorch native  OMP=8 taskset 8 big-core : 4.86 tok/s  (baseline)
-    FlagGems Triton OMP=6 taskset 6 big-core : 4.67 tok/s  (-3.9%)  ← prefill BF16→FP32 cast
+⚠️ 测试结论 (CIX P1 CD8180, ARM64, performance governor, 2026-03-04):
+  短 prompt (8 tok, 20 new), N_RUNS=3:
+    PyTorch native  OMP=6 taskset 6 big-core : 6.43 tok/s  (baseline)
+    FlagGems Triton OMP=6 taskset 6 big-core : 4.03 tok/s  (-37% regression)
 
-  ⚠️ 旧数据 (schedutil governor 下测量，CPU 频率未到最大) 已作废。
+  ❌ FlagGems 对 Qwen3-0.6B 无益。根本原因:
+     CIX P1 CD8180 原生支持 ARM BF16 BLAS (BFDOT/BFMMLA via NEON)；
+     ATen 已使用原生 BF16，BF16 mm 446μs < FP32 645μs（K=1024,N=3072）。
+     Triton 对所有 Qwen3-0.6B decode 形状慢 1.4-1.6x；加上 dispatch 开销 → -37%。
+     FlagGems 仅对更大模型 (Qwen2-7B BF16: +2.56x) 有益，因那些形状 ATen 走 FP32 路径。
 
-关键发现 — OMP 线程数不对称 (taskset 绑大核):
-  Baseline (ATen)       : OMP=8 最优（多核 NEON），与 OMP=6 同等绑核下基本持平
-  FlagGems (Triton-CPU) : OMP=6 最优（绑 cpu0,1,10,11,6,7 大核；
-                          Triton 通过 launch grid 管理并行；
-                          OMP>6 引入小核调度开销）
-  ⚠️ 务必独立运行 baseline 和 FlagGems (不同进程, 不同 taskset)；
-     不能在 taskset -c 0,1,10,11,6,7 下以 OMP=8 跑 baseline（8线程占6核→竞争）
+  ❌ 旧数据 (schedutil governor / wrong methodology) 已作废:
+     "5.86 ATen / 6.41 FlagGems +9.4%"  — 使用 schedutil 时测量，不代表实际性能。
 
-算子选择说明 — decode 路径 (M=1 小张量) 的 Triton 启动开销分析:
+⚠️ only_enable() 累积 bug:
+  重复调用 only_enable(include=[new_ops]) 会「追加」，不会清除旧注册。
+  空列表调用静默失败 (warning only)，不取消注册。隔离测试必须用独立进程。
 
-  ✓ 有益（高计算/启动比）:
-      mm/addmm/bmm/sdpa   GEMM 形状大，compute 远超 9μs 启动开销
-      silu/softmax        融合减少内存往返
-      rsqrt/mean          RMSNorm 组件，轻量但频率适中
-
-  ~ 基本中性（各自 <1%，合计约 -1%）:
-      sub/sub_            残差减法，调用次数少
-      pow variants        RMSNorm x² 步骤
-      argmax/max/min/sum  规约类，调用次数少
-      log_softmax         少量调用
-      embedding           prefill 主导，decode 1次
-      index/index_select/gather/scatter  低频
-      sort/topk/multinomial              采样时低频
-      where/div variants                 低频
-
-  ~ 轻微负面（合计约 -4~6%）:
-      neg/neg_/cos/cos_/sin/sin_  M=1 Triton ~15μs vs ATen ~3μs
-                                   调用次数中等（RoPE 相关）
-      gelu/gelu_                   M=1 激活，类似 silu 但使用较少
-
-  ✗ 明确有害（排除）:
-      mul/mul_   weight[1024]×hidden[1,1,1024] 路由 bug 修复后仍 73μs vs ATen 3μs
-                 252+ calls/token → 单独造成 -28% regression
-      add/add_   residual [1,1,3584]: 56 calls × ~30μs → -8% regression
-      patch_qwen3_rmsnorm()  M=1 Triton 2-pass 比 ATen 5-op 分解慢
+算子选择说明 (保留此列表以供参考，但对 Qwen3-0.6B 均为负面):
+  ✗ 所有算子组合均导致 regression:
+      mm/addmm/bmm        -27% (ATen BF16 BLAS 已最优)
+      silu/gelu/softmax   -11% (overhead > fusion benefit)
+      cos/sin/neg         -13% (M=1 Triton ~15μs vs ATen ~3μs)
+      rsqrt/mean/redux    -33% (低频，累积开销)
+      sdpa                -16% (decode Q_CTX=1，28 blocks → 明确有害，已从列表移除)
+      mul/mul_            -28% (252+ calls/token, 73μs vs ATen 3μs)
+      add/add_            -8%  (56 calls/token, ~30μs each)
+      patch_qwen3_rmsnorm M=1 Triton 2-pass 比 ATen 5-op 分解慢
 
 注意: flag_gems.enable() 全量注册与 transformers 生成循环存在兼容问题
 (arange/copy_ 等工具类 op 会干扰 cache_position 处理)，
@@ -76,21 +58,25 @@ N_RUNS = int(os.getenv("N_RUNS", "3"))
 # FlagGems ops to enable via only_enable().
 # All operators listed here have _arm/ops/ Triton-CPU implementations.
 #
-# Op-group benchmark results (CIX P1 CD8180, OMP=6, taskset big-cores):
-#   v1-only (12 ops):              6.51 tok/s  (reference)
-#   v1 + unary(neg/cos/sin/gelu):  6.26 tok/s  (-4%)
-#   v1 + sub:                      6.45 tok/s  (-1%)
-#   v1 + pow:                      6.47 tok/s  (-1%)
-#   v1 + redux+misc:               6.45 tok/s  (-1%)
-#   v1 + expanded (this list):     6.09 tok/s  (-6%)
-#   v1 + add:                      6.00 tok/s  (-8%)   ← excluded
-#   v1 + mul:                      4.70 tok/s  (-28%)  ← excluded
+# ⚠️ NOTE (2026-03-04): ALL ops below cause regression for Qwen3-0.6B on CIX P1 CD8180.
+# ATen already uses native ARM BF16 BLAS (BFDOT/BFMMLA); Triton is 1.4-1.6x slower
+# for these small decode shapes. Full list gives 4.03 tok/s vs 6.43 ATen (-37%).
+# This list may still be useful for other models/hardware where ATen lacks BF16 BLAS.
+#
+# ❌ OLD data (schedutil governor) was wrong: "6.51 ref / 6.09 expanded (-6%)" invalidated.
+#
+# Confirmed excluded (separate process isolation tests):
+#   mul/mul_: 252+ calls/token × 73μs each → -28% e2e
+#   add/add_: 56 calls/token × ~30μs each  → -8% e2e
+#   sdpa: decode Q_CTX=1, 28 blocks        → -16% e2e
 FLAGGEMS_INCLUDE = [
-    # ── GEMM / attention (high-value, always on) ──────────────────────────
+    # ── GEMM (high-value, always on) ──────────────────────────────────────
     "mm", "mm_out",
     "addmm", "addmm_out",
     "bmm",
-    "scaled_dot_product_attention",
+    # NOTE: scaled_dot_product_attention excluded — isolation test shows -16%
+    # regression (genuine Triton SDPA kernel overhead vs ATen for decode Q_CTX=1,
+    # 28 blocks only).  Autotune key change doesn't help; removal is the fix.
 
     # ── Activations ───────────────────────────────────────────────────────
     "silu", "silu_",

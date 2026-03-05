@@ -57,9 +57,7 @@ CUSTOMIZED_UNUSED_OPS = (
     "randn_like",
     "randperm",
     "uniform_",
-    # Attention ops with autotune cause non-deterministic behavior on CPU
-    "scaled_dot_product_attention",
-    "scaled_dot_product_attention_forward",
+    # scaled_dot_product_attention_backward not enabled (training only)
     "scaled_dot_product_attention_backward",
 )
 

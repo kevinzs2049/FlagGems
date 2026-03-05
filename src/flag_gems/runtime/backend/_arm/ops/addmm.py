@@ -17,10 +17,11 @@ ADDMM_M1_CONFIG_TABLE = (
 )
 
 ADDMM_M1_TRANSPOSED_CONFIG_TABLE = (
-    {"n_min": 65536, "k_min": 0, "config": (32, 32)},
-    {"n_min": 2048, "k_min": 0, "config": (32, 16)},
-    {"n_min": 0, "k_min": 3072, "config": (16, 16)},
-    {"n_min": 0, "k_min": 0, "config": (8, 32)},
+    # Tuned on CIX P1 aarch64 (2026-03-04): BK=64 fills a full cache line.
+    {"n_min": 65536, "k_min": 0, "config": (2, 64)},
+    {"n_min": 2048, "k_min": 0, "config": (4, 64)},
+    {"n_min": 0, "k_min": 2048, "config": (4, 64)},
+    {"n_min": 0, "k_min": 0, "config": (4, 64)},
 )
 
 
