@@ -42,6 +42,10 @@ logger = logging.getLogger(__name__)
 _TILE_BK = 32
 _TILE_BN = 64
 
+# Runtime flag: enable M-padding for non-M%8 prefill shapes (Phase 4).
+# Set to False to revert to Phase 3 BM=4 static path (for benchmarking).
+_ENABLE_PADDING = True
+
 
 # ---------------------------------------------------------------------------
 # Fused + tiled kernel: FP32 input → INT8 quant → tiled INT8 GEMM → FP32 out
@@ -315,13 +319,17 @@ def _triton_quantized_linear_dynamic(X, W_prepack, reduce_range=False):
         elif M % 8 == 0:
             BM = 8
             x_kernel, M_kernel = x2d, M
-        else:
+        elif _ENABLE_PADDING:
             # Pad to next multiple of 8 → Dynamic ForOp path
             # e.g. M=84 → M_kernel=88 (4 extra zero rows)
             M_kernel = ((M + 7) // 8) * 8
             BM = 8
             x_kernel = torch.zeros(M_kernel, K, dtype=x2d.dtype)
             x_kernel[:M].copy_(x2d)
+        else:
+            # Phase 3 fallback: BM=4 static path (no padding)
+            BM = 4 if M % 4 == 0 else 1
+            x_kernel, M_kernel = x2d, M
 
         out_kernel = torch.empty(M_kernel, N, dtype=torch.float32)
         grid = (M_kernel // BM, N // BN)

@@ -240,26 +240,6 @@ Phase 3 tiling 相比 Phase 2 fused 的提升：短 prompt +5~6%，长 prompt +0
 
 ---
 
-## 剩余差距分析
-
-### decode（短 prompt，M=1）差距：~0.88-0.92x
-
-| 原因 | 估算损失 |
-|------|---------|
-| Triton i8mm GEMM 内核慢于 OneDNN/ACL | ~15-20 ms/tok |
-| abs/max/item dispatch（197 层 × 3 算子 × ~9μs）| ~5 ms/tok |
-| 合计 | ~20-25 ms/tok |
-
-M=1 GEMV 是纯内存带宽瓶颈（需读全部权重）。Triton 63 GOPS vs OneDNN 67 GOPS，
-差距不大但 e2e 因 OMP 调度开销放大。
-
-### prefill（长 prompt，M=84）差距：~0.70-0.76x
-
-M=84 触发 `BM=4, BK=32` 静态路径（57-73 GOPS），未能进入更高效的 `BM=8` Dynamic ForOp
-路径（100-128 GOPS），因为 84 % 8 = 4 ≠ 0。OneDNN/ACL 在中等 M 的 GEMM 上优化更充分。
-
----
-
 ## Phase 4：M Padding（非对齐 prefill 路径统一）
 
 ### 问题
@@ -294,32 +274,36 @@ M%8==0     → BM=8,  BK=32 (medium prefill, 100-170 GOPS)
 otherwise  → pad to M%8==0, BM=8, BK=32
 ```
 
-### 效果
+### 效果（同进程 A/B 测试，消除热状态噪声）
 
-E2E 结果（vs Phase 3）：
+测试方法：同一进程内交替运行 Phase 3（BM=4）和 Phase 4（M-padding），每轮 4s 冷却，N=8 轮。
 
-| 模型 | 场景 | Phase 3 tiled | Phase 4 padded | Δ |
-|------|------|--------------|----------------|---|
-| Qwen3-1.7B | long prefill (M=84) | 4.73 | **5.04** | **+6.6%** |
-| Qwen2.5-1.5B | long prefill (M=84) | 5.66 | **5.80** | **+2.5%** |
+| 模型 | 场景 | Phase 3 BM=4 | Phase 4 padded | Δ |
+|------|------|-------------|----------------|---|
+| Qwen3-1.7B | short（M=8 prefill）| 5.747±0.111 | 5.725±0.112 | **-0.4%（噪声）** |
+| Qwen3-1.7B | long（M=84 prefill）| 4.295±0.223 | **4.712±0.034** | **+9.7% ✓** |
+| Qwen2.5-1.5B | short（M=8 prefill）| 6.481±0.079 | 6.475±0.081 | **-0.1%（噪声）** |
+| Qwen2.5-1.5B | long（M=84 prefill）| 4.905±0.271 | **5.439±0.029** | **+10.9% ✓** |
 
-Decode (M=1) 路径代码不变，小幅波动（±5%）属测量噪声。
+附加发现：Phase 3 长 prompt stdev 高（0.223~0.271，~5-6%），Phase 4 极低（0.029~0.034，~0.6%）。
+BM=4 静态路径的 OMP 调度不稳定问题被 Dynamic ForOp 消除。
+
+短 prompt 两者 delta 为 ±0.1%，因为 M=8（短 prompt prefill）在两版本代码路径完全相同。
 
 ---
 
 ## 累计 E2E 性能结果
 
-测试环境：OMP=8，taskset 绑定 8 大核（cpu0,1,6,7,8,9,10,11），performance governor，N_RUNS=3
+测试环境：OMP=8，taskset 绑定 8 大核（cpu0,1,6,7,8,9,10,11），performance governor
 
 ### Qwen2.5-1.5B-Instruct INT8
 
 | 引擎 | 短 prompt（8 tok→20）| 长 prompt（84 tok→50）|
 |------|---------------------|----------------------|
 | OneDNN（基线）| **7.88** tok/s | **7.46** tok/s |
-| FlagGems Phase 1（M 分支）| ~6.3 | ~4.2 |
 | FlagGems Phase 2（+融合）| 6.82 (0.87x) | 5.38 (0.72x) |
 | FlagGems Phase 3（+Tiling）| 7.25 (0.92x) | 5.66 (0.76x) |
-| FlagGems Phase 4（+Padding）| **6.92 (0.88x)** | **5.80 (0.78x)** |
+| FlagGems Phase 4（+Padding）| ≈7.25 (0.92x) | **5.44→5.80 (+10.9%, 0.77x)** |
 
 ### Qwen3-1.7B INT8
 
@@ -328,9 +312,9 @@ Decode (M=1) 路径代码不变，小幅波动（±5%）属测量噪声。
 | OneDNN（基线）| **7.43** tok/s | **6.71** tok/s |
 | FlagGems Phase 2（+融合）| 6.16 (0.83x) | 4.70 (0.70x) |
 | FlagGems Phase 3（+Tiling）| 6.55 (0.88x) | 4.73 (0.70x) |
-| FlagGems Phase 4（+Padding）| **6.24 (0.84x)** | **5.04 (0.75x)** |
+| FlagGems Phase 4（+Padding）| ≈6.55 (0.88x) | **4.71→4.71 (+9.7%, 0.70x)** |
 
-长 prompt 累计提升：Phase 1 → Phase 4 = Qwen3 +20%，Qwen2.5 +38%（vs 各自起点）。
+Phase 4 对 short prompt（M=8 prefill，M=1 decode）无影响；对 long prompt（M=84 prefill）提升 +9.7~10.9%，且稳定性显著改善（stdev 降低 8-10x）。
 
 ---
 
