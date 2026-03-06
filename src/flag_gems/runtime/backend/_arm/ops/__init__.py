@@ -130,3 +130,8 @@ __all__ = [
 from .quantized_linear_dynamic import register as _register_quantized_linear_dynamic
 
 _register_quantized_linear_dynamic()
+
+# Register Triton-CPU INT8 GEMM for aten::_int_mm (enables torchao INT8 paths).
+from .int_mm import register as _register_int_mm
+
+_register_int_mm()
