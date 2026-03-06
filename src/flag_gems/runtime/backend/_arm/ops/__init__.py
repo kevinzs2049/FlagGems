@@ -135,3 +135,30 @@ _register_quantized_linear_dynamic()
 from .int_mm import register as _register_int_mm
 
 _register_int_mm()
+
+# Register FlagGems argmax for aten::argmax (decode lm_head: 2.2x faster for [1,151936]).
+# Auto-registered on import so INT8 users get the speedup without explicit only_enable().
+import logging as _logging
+import torch as _torch
+from .argmax import argmax as _fg_argmax
+
+_argmax_aten_lib = None
+
+
+def _register_argmax():
+    global _argmax_aten_lib
+    if _argmax_aten_lib is not None:
+        return
+    try:
+        _argmax_aten_lib = _torch.library.Library("aten", "IMPL")
+        _argmax_aten_lib.impl("argmax", _fg_argmax, "CPU", allow_override=True)
+        _logging.getLogger(__name__).debug(
+            "FlagGems ARM: registered Triton-CPU argmax for aten::argmax"
+        )
+    except Exception as e:
+        _logging.getLogger(__name__).warning(
+            f"FlagGems ARM: failed to register argmax override: {e}"
+        )
+
+
+_register_argmax()
