@@ -8,9 +8,8 @@ Kernel configs (validated on CIX P1 CD8180):
   M=1          → BM=1,  BN=64, BK=4  (ConvertDotGeneric, 63 GOPS decode)
   M=2          → BM=2,  BN=64, BK=4  (ConvertDotGeneric, LLVM unrolls K=4)
   M%64==0      → BM=64, BN=64, BK=32 (SVE2 i8mm dynamic ForOp, 411 GOPS)
-  M%8==0       → BM=8,  BN=64, BK=32 (SVE2 i8mm dynamic ForOp)
-  M%4==0       → BM=4,  BN=64, BK=32 (SVE2 i8mm static path)
-  otherwise    → BM=1,  BN=64, BK=4  (fallback for M=3,5,6,7...)
+  M%8==0       → BM=8,  BN=64, BK=32 (SVE2 i8mm dynamic ForOp, 100-128 GOPS)
+  otherwise    → pad M to next %8==0, BM=8 (zero-pad extra rows, then slice output)
 
 Fusion optimisation (2026-03-06):
   _i8mm_fused_kernel takes FP32 activation input directly and outputs FP32.
@@ -244,9 +243,13 @@ def _triton_quantized_linear_dynamic(X, W_prepack, reduce_range=False):
     W_prepack: torch.ScriptObject (LinearPackedParamsBase), qint8 [N, K]
     Returns  : float32 tensor, shape [..., N]
 
-    Decode (M=1,2): _i8mm_fused_kernel with row-major weight [K,N], BK=4.
-    Prefill (M≥4): _i8mm_fused_tiled_kernel with tiled weight [K//32,N//64,32,64], BK=32.
-      Tiled layout makes each 32×64 B tile contiguous → better L2 cache utilisation.
+    Decode (M=1,2): _i8mm_fused_kernel, row-major weight [K,N], BK=4.
+      LLVM fully unrolls K=4 loop → fastest for tiny GEMV.
+
+    Prefill (M≥3): _i8mm_fused_tiled_kernel, tiled weight [K//32,N//64,32,64], BK=32.
+      BM=64 for M%64==0; BM=8 for all other M (with zero-padding if M%8≠0).
+      Padding: M=84 → M_kernel=88 (+4 zero rows), unlocks Dynamic ForOp path
+      (100-128 GOPS) vs old BM=4 static path (57-73 GOPS).
     """
     weight_kn, weight_tiled, weight_scale, bias = _get_weight(W_prepack)
 
@@ -268,16 +271,13 @@ def _triton_quantized_linear_dynamic(X, W_prepack, reduce_range=False):
     inv_x_scale = 127.0 / x_abs_max
     out_scale   = (x_abs_max / 127.0) * weight_scale
 
-    out2d = torch.empty(M, N, dtype=torch.float32)
-
     # ------------------------------------------------------------------
     # Decode paths (M=1,2): row-major weight, BK=4, ConvertDotGeneric.
-    # LLVM fully unrolls the K=4 inner loop → fastest for GEMV.
     # ------------------------------------------------------------------
     if M == 1:
         BM, BN, BK = 1, 64, 4
-        grid = (1, N // BN)
-        _i8mm_fused_kernel[grid](
+        out2d = torch.empty(M, N, dtype=torch.float32)
+        _i8mm_fused_kernel[(1, N // BN)](
             x2d, weight_kn, out2d,
             M, N, K,
             x2d.stride(0), x2d.stride(1),
@@ -289,8 +289,8 @@ def _triton_quantized_linear_dynamic(X, W_prepack, reduce_range=False):
 
     elif M == 2:
         BM, BN, BK = 2, 64, 4
-        grid = (1, N // BN)
-        _i8mm_fused_kernel[grid](
+        out2d = torch.empty(M, N, dtype=torch.float32)
+        _i8mm_fused_kernel[(1, N // BN)](
             x2d, weight_kn, out2d,
             M, N, K,
             x2d.stride(0), x2d.stride(1),
@@ -301,9 +301,9 @@ def _triton_quantized_linear_dynamic(X, W_prepack, reduce_range=False):
         )
 
     # ------------------------------------------------------------------
-    # Prefill paths (M≥4): tiled weight [K//32, N//64, 32, 64], BK=32.
-    # Tiled layout → contiguous B tile loads → better L2 cache hit rate.
-    # Falls back to row-major if tiling wasn't possible (shape mismatch).
+    # Prefill path (M≥3): BK=32, tiled weight, Dynamic ForOp target.
+    # BM=64 for large aligned M; BM=8 for all others (pad if M%8≠0).
+    # Zero-padding extra rows costs ~5% work but gains 40-80% GOPS.
     # ------------------------------------------------------------------
     else:
         use_tiled = weight_tiled is not None
@@ -311,51 +311,44 @@ def _triton_quantized_linear_dynamic(X, W_prepack, reduce_range=False):
 
         if M % 64 == 0:
             BM = 64
+            x_kernel, M_kernel = x2d, M
         elif M % 8 == 0:
             BM = 8
-        elif M % 4 == 0:
-            BM = 4
+            x_kernel, M_kernel = x2d, M
         else:
-            # Non-aligned M (3, 5, 6, 7, ...): fall back to decode path
-            BM, BN, BK = 1, 64, 4
-            grid = (M, N // BN)
-            _i8mm_fused_kernel[grid](
-                x2d, weight_kn, out2d,
-                M, N, K,
-                x2d.stride(0), x2d.stride(1),
-                weight_kn.stride(0), weight_kn.stride(1),
-                out2d.stride(0), out2d.stride(1),
-                inv_x_scale=inv_x_scale, out_scale=out_scale,
-                BLOCK_M=BM, BLOCK_N=BN, BLOCK_K=BK,
-            )
-            if bias is not None:
-                out2d = out2d + bias
-            return out2d.view(*orig_shape[:-1], N)
+            # Pad to next multiple of 8 → Dynamic ForOp path
+            # e.g. M=84 → M_kernel=88 (4 extra zero rows)
+            M_kernel = ((M + 7) // 8) * 8
+            BM = 8
+            x_kernel = torch.zeros(M_kernel, K, dtype=x2d.dtype)
+            x_kernel[:M].copy_(x2d)
 
-        grid = (triton.cdiv(M, BM), N // BN)
+        out_kernel = torch.empty(M_kernel, N, dtype=torch.float32)
+        grid = (M_kernel // BM, N // BN)
 
         if use_tiled:
-            N_TILES = N // BN
             _i8mm_fused_tiled_kernel[grid](
-                x2d, weight_tiled, out2d,
-                M, N, K,
-                x2d.stride(0), x2d.stride(1),
-                out2d.stride(0), out2d.stride(1),
-                N_TILES,
+                x_kernel, weight_tiled, out_kernel,
+                M_kernel, N, K,
+                x_kernel.stride(0), x_kernel.stride(1),
+                out_kernel.stride(0), out_kernel.stride(1),
+                N // BN,
                 inv_x_scale=inv_x_scale, out_scale=out_scale,
                 BLOCK_M=BM, BLOCK_N=BN, BLOCK_K=BK,
             )
         else:
-            # Fallback: row-major weight (shape not tile-aligned)
             _i8mm_fused_kernel[grid](
-                x2d, weight_kn, out2d,
-                M, N, K,
-                x2d.stride(0), x2d.stride(1),
+                x_kernel, weight_kn, out_kernel,
+                M_kernel, N, K,
+                x_kernel.stride(0), x_kernel.stride(1),
                 weight_kn.stride(0), weight_kn.stride(1),
-                out2d.stride(0), out2d.stride(1),
+                out_kernel.stride(0), out_kernel.stride(1),
                 inv_x_scale=inv_x_scale, out_scale=out_scale,
                 BLOCK_M=BM, BLOCK_N=BN, BLOCK_K=BK,
             )
+
+        # Slice off the padding rows (out_kernel[:M] is a view, no copy)
+        out2d = out_kernel[:M] if M_kernel != M else out_kernel
 
     if bias is not None:
         out2d = out2d + bias

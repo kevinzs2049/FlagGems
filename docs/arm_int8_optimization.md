@@ -260,19 +260,105 @@ M=84 触发 `BM=4, BK=32` 静态路径（57-73 GOPS），未能进入更高效�
 
 ---
 
+## Phase 4：M Padding（非对齐 prefill 路径统一）
+
+### 问题
+
+Phase 3 中非 M%8==0 的 prefill 形状走 BM=4 静态路径（57-73 GOPS）或 BM=1 fallback。
+典型 LLM long-prompt：M=84（84%8=4），无法触发 Dynamic ForOp。
+
+### 解决方案
+
+对所有 M≥3 且 M%8≠0 的情形，padding 到下一个 M%8==0：
+
+```python
+M_kernel = ((M + 7) // 8) * 8     # e.g. M=84 → M_kernel=88
+x_kernel = torch.zeros(M_kernel, K, dtype=x2d.dtype)
+x_kernel[:M].copy_(x2d)            # 补零行
+# 用 BM=8 Dynamic ForOp 运行
+out_kernel = run_kernel(x_kernel, M_kernel, ...)
+out2d = out_kernel[:M]              # 切除补零行（view，无拷贝）
+```
+
+成本分析（M=84→88）：
+- 额外补零行：4 × K = 4 × 3584 = ~57 KB → 可忽略
+- 额外 kernel 计算：4/88 = +4.8%
+- GOPS 收益：57-73 → ~170 GOPS（**2.3-3x**）
+
+统一后路由简化为：
+```
+M==1       → BM=1, BK=4  (decode)
+M==2       → BM=2, BK=4  (decode)
+M%64==0    → BM=64, BK=32 (large prefill, 411 GOPS)
+M%8==0     → BM=8,  BK=32 (medium prefill, 100-170 GOPS)
+otherwise  → pad to M%8==0, BM=8, BK=32
+```
+
+### 效果
+
+E2E 结果（vs Phase 3）：
+
+| 模型 | 场景 | Phase 3 tiled | Phase 4 padded | Δ |
+|------|------|--------------|----------------|---|
+| Qwen3-1.7B | long prefill (M=84) | 4.73 | **5.04** | **+6.6%** |
+| Qwen2.5-1.5B | long prefill (M=84) | 5.66 | **5.80** | **+2.5%** |
+
+Decode (M=1) 路径代码不变，小幅波动（±5%）属测量噪声。
+
+---
+
+## 累计 E2E 性能结果
+
+测试环境：OMP=8，taskset 绑定 8 大核（cpu0,1,6,7,8,9,10,11），performance governor，N_RUNS=3
+
+### Qwen2.5-1.5B-Instruct INT8
+
+| 引擎 | 短 prompt（8 tok→20）| 长 prompt（84 tok→50）|
+|------|---------------------|----------------------|
+| OneDNN（基线）| **7.88** tok/s | **7.46** tok/s |
+| FlagGems Phase 1（M 分支）| ~6.3 | ~4.2 |
+| FlagGems Phase 2（+融合）| 6.82 (0.87x) | 5.38 (0.72x) |
+| FlagGems Phase 3（+Tiling）| 7.25 (0.92x) | 5.66 (0.76x) |
+| FlagGems Phase 4（+Padding）| **6.92 (0.88x)** | **5.80 (0.78x)** |
+
+### Qwen3-1.7B INT8
+
+| 引擎 | 短 prompt（8 tok→20）| 长 prompt（84 tok→50）|
+|------|---------------------|----------------------|
+| OneDNN（基线）| **7.43** tok/s | **6.71** tok/s |
+| FlagGems Phase 2（+融合）| 6.16 (0.83x) | 4.70 (0.70x) |
+| FlagGems Phase 3（+Tiling）| 6.55 (0.88x) | 4.73 (0.70x) |
+| FlagGems Phase 4（+Padding）| **6.24 (0.84x)** | **5.04 (0.75x)** |
+
+长 prompt 累计提升：Phase 1 → Phase 4 = Qwen3 +20%，Qwen2.5 +38%（vs 各自起点）。
+
+---
+
+## 剩余差距分析
+
+### decode（短 prompt，M=1）差距：~0.84-0.88x
+
+M=1 GEMV 是纯内存带宽瓶颈。Triton 63 GOPS vs OneDNN 67 GOPS，差距约 6%，
+加上 197 层 × abs/max/item dispatch 开销（~5 ms/tok），e2e 约 12-16% 落后。
+
+### prefill（长 prompt，M=84→88 padding 后）差距：~0.75-0.78x
+
+M=84 padding 后 GOPS 提升到 ~170（vs OneDNN ~513 GOPS）。剩余差距原因：
+- Triton smmla 流水线效率 vs ACL 高度优化的矩阵分块（ACL 有 L2 prefetch 指令调度）
+- per-tensor 激活量化 vs OneDNN 的优化量化路径
+
+---
+
 ## 后续优化方向（TODO）
 
 ### 短期
 
-1. **M=84 prefill padding**：对非 M%8==0 的形状，考虑 padding 到 M%8==0 再调用 BM=8 路径，
-   以利用 Dynamic ForOp（目前 84%8=4，走 BM=4 静态路径）
-
-2. **abs/max Triton 化**：用小 Triton kernel 替代 `x2d.abs().max().item()`，
+1. **abs/max Triton 化**：用小 Triton kernel 替代 `x2d.abs().max().item()`，
    减少 ~5 ms/tok 的 dispatch 开销（197 层 × 3 × 9μs）
 
 ### 中期
 
-3. **覆盖 `aten::_int_mm` CPU dispatch**：
+2. **覆盖 `aten::_int_mm` CPU dispatch**：
    - torchao `Int8DynamicActivationInt8WeightConfig` 走此接口
    - 当前 ARM64 上 `_int_mm` 是标量实现（1.9 GOPS），比 Triton 慢 33x
    - 实现后可覆盖 torchao 所有量化模型，适配现代量化生态
@@ -280,10 +366,10 @@ M=84 触发 `BM=4, BK=32` 静态路径（57-73 GOPS），未能进入更高效�
 
 ### 长期
 
-4. **per-block 激活量化**：对齐 llama.cpp Q8_0（per-32-elements 量化），
+3. **per-block 激活量化**：对齐 llama.cpp Q8_0（per-32-elements 量化），
    精度更高且可消除全局 abs/max 归约
 
-5. **vLLM torchao 路径**：待 `_int_mm` 覆盖完成后，评估 vLLM CPU INT8 路径
+4. **vLLM torchao 路径**：待 `_int_mm` 覆盖完成后，评估 vLLM CPU INT8 路径
 
 ---
 
