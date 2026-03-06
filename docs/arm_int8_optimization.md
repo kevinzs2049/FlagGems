@@ -358,11 +358,11 @@ M=84 padding 后 GOPS 提升到 ~170（vs OneDNN ~513 GOPS）。剩余差距原�
 
 ### 中期
 
-2. **覆盖 `aten::_int_mm` CPU dispatch**：
+2. ~~**覆盖 `aten::_int_mm` CPU dispatch**~~ **✅ 已完成（`_arm/ops/int_mm.py`）**：
    - torchao `Int8DynamicActivationInt8WeightConfig` 走此接口
-   - 当前 ARM64 上 `_int_mm` 是标量实现（1.9 GOPS），比 Triton 慢 33x
-   - 实现后可覆盖 torchao 所有量化模型，适配现代量化生态
-   - 新建 `_arm/ops/int_mm.py`，注册 `aten::_int_mm` CPU dispatch
+   - 标量基线：1.9 GOPS；Triton 实现：M=1 → 63 GOPS（33x），M=64 → 366 GOPS（193x）
+   - 通过 `__init__.py` 自动注册，import flag_gems ARM ops 时生效
+   - 正确性：所有形状 max_err=0（精确 int32 算术）
 
 ### 长期
 
