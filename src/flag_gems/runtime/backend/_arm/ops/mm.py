@@ -19,6 +19,11 @@ MM_GENERIC_CONFIG_TABLE = (
     {"m_max": 8, "n_min": 0, "k_min": 2048, "config": (8, 8, 32)},
     {"m_max": 8, "n_min": 2048, "k_min": 0, "config": (8, 8, 8)},
     {"m_max": 8, "n_min": 0, "k_min": 0, "config": (8, 8, 8)},
+    # Prefill M>8: (64,32,32) benchmarked as best on CIX P1 (2026-03-07).
+    # Triton BF16 prefill is still ~3x slower than ATen BFMMLA — fundamental
+    # limit of Triton not emitting BFMMLA for tl.dot(bf16,bf16). Larger tiles
+    # reduce overhead vs (8,8,8) default but cannot close the BFMMLA gap.
+    {"m_max": None, "n_min": 0, "k_min": 0, "config": (64, 32, 32)},
 )
 
 MM_M1_CONFIG_TABLE = (
@@ -524,6 +529,14 @@ def mm(a, b):
         ):
             return c_kernel.to(c_dtype) if m1_out_fp32 else c_kernel
 
+    # M>1 BF16: fallback to ATen native mm (ARM BFMMLA, 3-5x faster than Triton).
+    # Cannot call torch.mm() here (infinite recursion via torch.library override).
+    # torch.addmm(beta=0) bypasses aten::mm dispatch and uses ATen BFMMLA directly.
+    if M > 1 and use_fp32_kernel:
+        return torch.addmm(
+            torch.empty(N, device=device, dtype=c_dtype), a, b, beta=0, alpha=1
+        )
+
     # Generic path: for M>1 bf16, pass bf16 inputs directly to the Triton kernel
     # instead of casting to fp32 first. The kernel uses tl.dot(out_dtype=tl.float32)
     # for fp32 accumulation, so bf16 inputs are handled natively. This avoids the
@@ -615,6 +628,14 @@ def mm_out(a, b, *, out):
             if m1_out_fp32:
                 out.copy_(out_kernel.to(out.dtype))
             return out
+
+    # M>1 BF16: fallback to ATen native mm (see mm() for rationale).
+    if M > 1 and use_fp32_kernel:
+        torch.addmm(
+            torch.empty(N, device=out.device, dtype=out.dtype), a, b,
+            beta=0, alpha=1, out=out,
+        )
+        return out
 
     # For M>1 bf16, pass bf16 inputs directly to Triton kernel (see mm() comment).
     if use_fp32_kernel and M > 1:
