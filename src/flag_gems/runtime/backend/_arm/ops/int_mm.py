@@ -73,15 +73,20 @@ def _int8mm_kernel(
 
 
 # ---------------------------------------------------------------------------
-# Host-side dispatch
+# Weight cache: torchao int8dq provides col-major weights that need
+# .contiguous() to become row-major for the Triton kernel.  Without caching,
+# this copy (3-11ms per call) dominates every token.  Cache by data_ptr()
+# so each weight is made contiguous only once (first call per layer).
 # ---------------------------------------------------------------------------
+_INT_MM_B_CACHE: dict = {}
+
 
 def _triton_int_mm(self: torch.Tensor, mat2: torch.Tensor) -> torch.Tensor:
     """
     Triton-CPU replacement for aten::_int_mm on ARM64.
 
-    self : [M, K] int8
-    mat2 : [K, N] int8  (row-major weight, as provided by torchao)
+    self : [M, K] int8  — activation (changes every token, not cached)
+    mat2 : [K, N] int8  — weight (fixed after quantization, cached by data_ptr)
     Returns [M, N] int32
     """
     assert self.dtype == torch.int8 and mat2.dtype == torch.int8, (
@@ -91,9 +96,15 @@ def _triton_int_mm(self: torch.Tensor, mat2: torch.Tensor) -> torch.Tensor:
     K2, N = mat2.shape
     assert K == K2, f"_int_mm shape mismatch: [{M},{K}] @ [{K2},{N}]"
 
-    # Ensure contiguous row-major layout
+    # Activation: always contiguous (per-token, no cache)
     a = self.contiguous()
-    b = mat2.contiguous()
+
+    # Weight: cache row-major copy — first call per layer pays the copy cost;
+    # all subsequent token decodes are ~free (dict lookup only).
+    b_key = mat2.data_ptr()
+    if b_key not in _INT_MM_B_CACHE:
+        _INT_MM_B_CACHE[b_key] = mat2.contiguous()
+    b = _INT_MM_B_CACHE[b_key]
 
     BN = 64
     BK_prefill = 32
