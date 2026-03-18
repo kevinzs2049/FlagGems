@@ -1,0 +1,8 @@
+area,operator_or_path,current_status,target_arch,priority,opportunity,primary_risk,evidence
+int8_linear,addmm/mm/linear,No dedicated _arm int8 kernel in FlagGems,ARM64,P0,High decode impact (M=1 dominates),dtype/layout mismatch,src/flag_gems/ops/mm.py
+int8_quantized_tensor,to/copy/isclose,Partial fallback or unsupported for is_quantized,ARM64,P0,Stabilize quantized graph behavior,Silent fallback hiding regressions,src/flag_gems/ops/to.py|src/flag_gems/ops/copy.py|src/flag_gems/ops/isclose.py
+int8_vllm_patch,vLLM quantized linear bridge,Patch map exists but mostly NVIDIA-centric quant ops,ARM64,P1,Can route vLLM quant ops into FlagGems _arm kernels,Patch coverage gaps,src/flag_gems/patches/patch_vllm_all.py
+int8_reference_path,cutlass_scaled_mm,Implemented for SM90 flow and dispatch constraints,CUDA reference only,P1,Use as contract reference for API/shape semantics,Architecture-specific assumptions,src/flag_gems/fused/cutlass_scaled_mm.py
+int4_moe,dynamic_4bit_int_moe_cpu,vLLM has ARM64-only 4-bit MoE CPU op using _dyn_quant_matmul_4bit,ARM64,P0,Direct migration anchor for int4 matmul semantics,Kernel contract mismatch with FlagGems layout,/home/kevin/vllm_source/csrc/moe/dynamic_4bit_int_moe_cpu.cpp
+int4_registration,dynamic_4bit_int_moe binding,vLLM CPU bindings already expose op,ARM64,P1,Easy integration point for A/B validation,Version drift with local vLLM tree,/home/kevin/vllm_source/csrc/cpu/torch_bindings.cpp
+int4_general_ops,FlagGems int4 native ops,No native int4 operator surface found in current FlagGems tree,ARM64,P1,Build _arm-only int4 pack/depack + mm/addmm path,Compiler/codegen maturity on Triton CPU,src/flag_gems
