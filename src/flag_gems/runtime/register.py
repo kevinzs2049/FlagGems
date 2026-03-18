@@ -106,7 +106,7 @@ class Register:
         device_key = self.reg_key
         self.all_ops.append(fn.__name__)
         self.all_keys.append(key)
-        self.lib.impl(key, fn, device_key)
+        self.lib.impl(key, fn, device_key, allow_override=True)
 
     def for_each(self):
         for key, func in self.config:
