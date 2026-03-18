@@ -136,3 +136,146 @@ from .int_mm import register as _register_int_mm
 
 _register_int_mm()
 
+# Register FlagGems argmax for aten::argmax (decode lm_head: 2.2x faster for [1,151936]).
+# Auto-registered on import so INT8 users get the speedup without explicit only_enable().
+import logging as _logging
+import torch as _torch
+from .argmax import argmax as _fg_argmax
+
+_argmax_aten_lib = None
+
+
+def _register_argmax():
+    global _argmax_aten_lib
+    if _argmax_aten_lib is not None:
+        return
+    try:
+        _argmax_aten_lib = _torch.library.Library("aten", "IMPL")
+        _argmax_aten_lib.impl("argmax", _fg_argmax, "CPU", allow_override=True)
+        _logging.getLogger(__name__).debug(
+            "FlagGems ARM: registered Triton-CPU argmax for aten::argmax"
+        )
+    except Exception as e:
+        _logging.getLogger(__name__).warning(
+            f"FlagGems ARM: failed to register argmax override: {e}"
+        )
+
+
+_register_argmax()
+
+# Override flag_gems.rms_norm and flag_gems.fused_add_rms_norm with ARM CPU versions.
+# The generic implementations (flag_gems/ops/rms_norm.py, flag_gems/fused/) use
+# LibEntry which indexes kernel_cache by GPU device count and calls CUDA-specific
+# Triton APIs — both fail on CPU-only ARM systems.
+# Our ARM fused kernels are already validated by patch_vllm_rmsnorm.py.
+def _override_rms_norm_with_arm():
+    try:
+        import flag_gems as _fg
+        from .rms_norm import rms_norm as _arm_rms_norm
+        from .rms_norm import fused_add_rms_norm as _arm_fused_add_rms_norm
+        _fg.rms_norm = _arm_rms_norm
+        _fg.fused_add_rms_norm = _arm_fused_add_rms_norm
+        _logging.getLogger(__name__).debug(
+            "FlagGems ARM: overrode flag_gems.rms_norm / fused_add_rms_norm "
+            "with ARM Triton CPU kernels"
+        )
+    except Exception as e:
+        _logging.getLogger(__name__).warning(
+            f"FlagGems ARM: failed to override rms_norm: {e}"
+        )
+
+
+_override_rms_norm_with_arm()
+
+
+# Override flag_gems.apply_rotary_pos_emb with ARM pure-PyTorch version.
+# The generic fused/rotary_embedding.py uses @libentry() → DEVICE_COUNT crash on CPU.
+def _override_rope_with_arm():
+    try:
+        import flag_gems as _fg
+        from .rope import arm_apply_rotary_pos_emb as _arm_rope
+        _fg.apply_rotary_pos_emb = _arm_rope
+        import flag_gems.fused as _fg_fused
+        _fg_fused.apply_rotary_pos_emb = _arm_rope
+        _logging.getLogger(__name__).debug(
+            "FlagGems ARM: overrode flag_gems.apply_rotary_pos_emb with pure-PyTorch"
+        )
+    except Exception as e:
+        _logging.getLogger(__name__).warning(
+            f"FlagGems ARM: failed to override apply_rotary_pos_emb: {e}"
+        )
+
+
+_override_rope_with_arm()
+
+
+# Override flag_gems.silu_and_mul / silu_and_mul_out with ARM Triton version.
+# The generic fused/silu_and_mul.py uses @pointwise_dynamic → @libentry() → crash.
+def _override_silu_and_mul_with_arm():
+    try:
+        import flag_gems as _fg
+        from .silu_and_mul import arm_silu_and_mul as _arm_sam
+        from .silu_and_mul import arm_silu_and_mul_out as _arm_sam_out
+        _fg.silu_and_mul = _arm_sam
+        _fg.silu_and_mul_out = _arm_sam_out
+        import flag_gems.fused as _fg_fused
+        _fg_fused.silu_and_mul = _arm_sam
+        _fg_fused.silu_and_mul_out = _arm_sam_out
+        _logging.getLogger(__name__).debug(
+            "FlagGems ARM: overrode flag_gems.silu_and_mul / silu_and_mul_out"
+        )
+    except Exception as e:
+        _logging.getLogger(__name__).warning(
+            f"FlagGems ARM: failed to override silu_and_mul: {e}"
+        )
+
+
+_override_silu_and_mul_with_arm()
+
+
+# Register FlagGems ARM mm for aten::mm (BF16 decode speedup).
+# M=1 decode: 2-5x faster than ATen (ATen GEMV unoptimized).
+# M=64 prefill: 2-3x slower (ATen uses native BF16 BFMMLA) — acceptable for
+# decode-heavy workloads where decode runs O(n_tokens) vs prefill once.
+# _mm_aten_lib must stay alive (GC would revoke the registration).
+try:
+    from .mm import mm as _fg_mm
+    _mm_aten_lib = _torch.library.Library("aten", "IMPL")
+    _mm_aten_lib.impl("mm", _fg_mm, "CPU", allow_override=True)
+    _logging.getLogger(__name__).debug("FlagGems ARM: registered Triton-CPU mm for aten::mm")
+except Exception as _e:
+    _mm_aten_lib = None
+    _logging.getLogger(__name__).warning(f"FlagGems ARM: failed to register aten::mm override: {_e}")
+
+
+# Register Triton-CPU Flash Attention for aten::scaled_dot_product_attention.
+# Prefill (M >= 32, BF16, no attn_mask): 4-5x faster than ATen on ARM64.
+# Decode (M=1) and other cases fall back to ATen automatically.
+# Strategy: try torch.library first; fall back to F.sdpa monkey-patch if needed.
+def _register_sdpa():
+    # NOTE: We intentionally use monkey-patch instead of torch.library here.
+    #
+    # torch.library.Library("aten", "IMPL").impl("scaled_dot_product_attention", ...)
+    # replaces the C++ dispatch for the op. This means ALL calls to the op —
+    # including the "fallback to ATen" call inside our own wrapper (_aten_sdpa) —
+    # would route back to our function, causing infinite recursion.
+    #
+    # With monkey-patch, _aten_sdpa in attention.py holds a reference to the
+    # original Python function object (captured at import time before patching).
+    # When our wrapper calls _aten_sdpa(...), it goes through the original C++
+    # dispatch WITHOUT our override, breaking the recursion.
+    try:
+        from .attention import scaled_dot_product_attention as _fg_sdpa
+        import torch.nn.functional as _F
+        _F.scaled_dot_product_attention = _fg_sdpa
+        _logging.getLogger(__name__).debug(
+            "FlagGems ARM: monkey-patched F.scaled_dot_product_attention "
+            "with Triton Flash Attention (prefill 4-5x speedup)"
+        )
+    except Exception as _e:
+        _logging.getLogger(__name__).warning(
+            f"FlagGems ARM: SDPA registration failed: {_e}"
+        )
+
+
+_register_sdpa()
