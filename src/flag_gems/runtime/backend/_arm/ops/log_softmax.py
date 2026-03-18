@@ -10,10 +10,8 @@ from flag_gems.runtime import torch_device_fn
 from flag_gems.utils import libentry
 from flag_gems.utils import triton_lang_extension as tle
 
-logger = logging.getLogger(__name__)
 
-
-@libentry()
+# @libentry()
 @triton.jit
 def log_softmax_kernel(
     output_ptr,
@@ -21,8 +19,8 @@ def log_softmax_kernel(
     M,
     N,
     K,
-    BLOCK_M: tl.constexpr = 8,
-    BLOCK_N: tl.constexpr = 256,
+    BLOCK_M: tl.constexpr = 1,
+    BLOCK_N: tl.constexpr = 1,
 ):
     pid_m = tle.program_id(0)
     pid_k = tle.program_id(1)
@@ -96,37 +94,28 @@ def log_softmax_backward_kernel(
         tl.store(in_grad_ptrs, in_grad, mask=mask)
 
 
-def log_softmax(self, dim, half_to_float=False):
-    logger.debug("GEMS LOG_SOFTMAX")
+class LogSoftmax(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, dim, dtype):
+        logging.debug("GEMS LOG_SOFTMAX")
 
-    if self.device.type == "cpu":
-        dim = dim % self.ndim
-        out_dtype = torch.float32 if half_to_float else self.dtype
-        inp = self.to(torch.float32)
-        inp_np = inp.detach().cpu().numpy()
-        shifted = inp_np - np.max(inp_np, axis=dim, keepdims=True)
-        out_np = shifted - np.log(np.sum(np.exp(shifted), axis=dim, keepdims=True))
-        return torch.from_numpy(out_np).to(device=self.device, dtype=out_dtype)
+        assert dim >= -x.ndim and dim < x.ndim, "Invalid dim"
+        dim = dim % x.ndim
+        M = 1
+        N = x.shape[dim]
+        for i in range(dim):
+            M *= x.shape[i]
+        inp = x.contiguous()
+        if dtype is None:
+            dtype = x.dtype
+        out = torch.empty_like(inp, dtype=dtype)
+        K = inp.numel() // M // N
 
-    assert dim >= -self.ndim and dim < self.ndim, "Invalid dim"
-    dim = dim % self.ndim
-    M = 1
-    N = self.shape[dim]
-    for i in range(dim):
-        M *= self.shape[i]
-    inp = self.contiguous()
-    if half_to_float:
-        dtype = torch.float32
-    else:
-        dtype = self.dtype
-    out = torch.empty_like(inp, dtype=dtype)
-    K = inp.numel() // M // N
-
-    grid = lambda meta: (
-        triton.cdiv(M, meta["BLOCK_M"]),
-        K,
-    )
-    with torch_device_fn.device(inp.device):
+        grid = lambda meta: (
+            triton.cdiv(M, meta["BLOCK_M"]),
+            K,
+        )
+        # with torch_device_fn.device(inp.device):
         log_softmax_kernel[grid](
             out,
             inp,
@@ -135,42 +124,52 @@ def log_softmax(self, dim, half_to_float=False):
             K,
             num_warps=8,
         )
-    return out
+        ctx.save_for_backward(out)
+        ctx.dim = dim
+        return out
 
+    @staticmethod
+    def backward(ctx, out_grad):
+        logging.debug("GEMS LOG_SOFTMAX VJP")
 
-def log_softmax_backward(grad_output, output, dim, input_dtype):
-    logger.debug("GEMS LOG_SOFTMAX VJP")
+        dim = ctx.dim
+        (out,) = ctx.saved_tensors
 
-    if output.device.type == "cpu":
-        dim = dim % output.ndim
-        grad_np = grad_output.detach().cpu().to(torch.float32).numpy()
-        out_np = output.detach().cpu().to(torch.float32).numpy()
-        scale = np.sum(grad_np, axis=dim, keepdims=True)
-        in_grad_np = grad_np - np.exp(out_np) * scale
-        return torch.from_numpy(in_grad_np).to(device=output.device, dtype=input_dtype)
+        assert dim >= -out.ndim and dim < out.ndim, "Invalid dim"
+        dim = dim % out.ndim
+        M = 1
+        N = out.shape[dim]
+        for i in range(dim):
+            M *= out.shape[i]
 
-    assert dim >= -output.ndim and dim < output.ndim, "Invalid dim"
-    dim = dim % output.ndim
-    M = 1
-    N = output.shape[dim]
-    for i in range(dim):
-        M *= output.shape[i]
+        out_grad = out_grad.contiguous()
+        in_grad = torch.empty_like(out)
+        K = out.numel() // M // N
 
-    grad_output = grad_output.contiguous()
-    in_grad = torch.empty_like(output, dtype=input_dtype)
-    K = output.numel() // M // N
-
-    grid = lambda meta: (
-        triton.cdiv(M, meta["BLOCK_M"]),
-        K,
-    )
-    with torch_device_fn.device(in_grad.device):
-        log_softmax_backward_kernel[grid](
-            output,
-            grad_output,
-            in_grad,
-            M,
-            N,
+        grid = lambda meta: (
+            triton.cdiv(M, meta["BLOCK_M"]),
             K,
         )
-    return in_grad
+        with torch_device_fn.device(in_grad.device):
+            log_softmax_backward_kernel[grid](
+                out,
+                out_grad,
+                in_grad,
+                M,
+                N,
+                K,
+            )
+        return in_grad, None, None
+
+
+def log_softmax(x, dim=-1, dtype=None):
+    if isinstance(dtype, bool):
+        dtype = torch.float32 if dtype else None
+    if x.device.type == "cpu":
+        dim = dim % x.ndim
+        out_dtype = x.dtype if dtype is None else dtype
+        inp_np = x.detach().cpu().to(torch.float32).numpy()
+        shifted = inp_np - np.max(inp_np, axis=dim, keepdims=True)
+        out_np = shifted - np.log(np.sum(np.exp(shifted), axis=dim, keepdims=True))
+        return torch.from_numpy(out_np).to(device=x.device, dtype=out_dtype)
+    return LogSoftmax.apply(x, dim, dtype)

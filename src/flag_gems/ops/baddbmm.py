@@ -230,6 +230,9 @@ def compute_B_grad(A, d_output, alpha):
 
 
 def baddbmm(bias, A, B, beta=1.0, alpha=1.0):
+    if A.device.type == "cpu":
+        bbias = torch.broadcast_to(bias, (A.shape[0], A.shape[1], B.shape[2]))
+        return bbias * beta + torch.bmm(A, B) * alpha
     return BaddbmmFunction.apply(
         bias.contiguous(),
         A.contiguous(),

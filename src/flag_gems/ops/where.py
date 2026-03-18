@@ -38,22 +38,23 @@ def where_self_out(condition, self, other, out=None):
     if b.dtype != result_type:
         b = b.to(result_type)
 
-    devices = map(lambda x: x.device, (c, a, b))
-    devices = list(filter(lambda k: k.type != "cpu", devices))
+    all_devices = [c.device, a.device, b.device]
+    devices = [dev for dev in all_devices if dev.type != "cpu"]
 
-    assert len(devices), "CPU only. There seems a mistake to dispatch to here."
-
-    device = devices[0]
-    if c.device != device and c.ndim == 0:
-        c = c.to(device)
-    if a.device != device and a.ndim == 0:
-        a = a.to(device)
-    if b.device != device and b.ndim == 0:
-        b = b.to(device)
-
-    assert (
-        len(set(devices)) == 1
-    ), f"Expected all tensors to be on the same device, but found at least two devices, {devices}"
+    if len(devices) == 0:
+        device = all_devices[0]
+    else:
+        device = devices[0]
+        if c.device != device and c.ndim == 0:
+            c = c.to(device)
+        if a.device != device and a.ndim == 0:
+            a = a.to(device)
+        if b.device != device and b.ndim == 0:
+            b = b.to(device)
+        current_devices = [c.device, a.device, b.device]
+        assert (
+            len(set(current_devices)) == 1
+        ), f"Expected all tensors to be on the same device, but found at least two devices, {current_devices}"
     assert (
         c.dtype == torch.bool
     ), f"where expected condition to be a boolean tensor, but got a tensor with dtype {condition.dtype}"

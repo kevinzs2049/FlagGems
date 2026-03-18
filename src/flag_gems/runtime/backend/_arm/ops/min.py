@@ -8,15 +8,13 @@ import triton
 import triton.language as tl
 
 from flag_gems import runtime
-from flag_gems.runtime import torch_device_fn
-from flag_gems.utils import dim_compress, libentry, libtuner
+
+# from ..runtime import torch_device_fn
+# from ..utils import libentry
 from flag_gems.utils import triton_lang_extension as tle
-from flag_gems.utils.limits import get_dtype_max
-
-logger = logging.getLogger(__name__)
 
 
-@libentry()
+# @libentry()
 @triton.jit
 def min_kernel_1(
     inp,
@@ -28,33 +26,55 @@ def min_kernel_1(
     offset = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     inp_ptrs = inp + offset
     mask = offset < M
-    max_value = get_dtype_max(inp.type.element_ty)
-    inp_val = tl.load(inp_ptrs, mask=mask, other=max_value)
+    inp_val = tl.load(inp_ptrs, mask=mask, other=float("inf"))
     min_val = tl.min(inp_val)
     mid_ptr = mid + pid
     tl.store(mid_ptr, min_val)
 
 
-@libentry()
+# @libentry()
 @triton.jit
 def min_kernel_2(mid, out, mid_size, BLOCK_MID: tl.constexpr):
     offset = tl.arange(0, BLOCK_MID)
     mid_ptrs = mid + offset
     mask = offset < mid_size
-    max_value = get_dtype_max(mid.type.element_ty)
-    mid_val = tl.load(mid_ptrs, mask=mask, other=max_value)
+    mid_val = tl.load(mid_ptrs, mask=mask, other=float("inf"))
     min_val = tl.min(mid_val)
     tl.store(out, min_val)
+
+
+@triton.autotune(
+    configs=[
+        triton.Config({"BLOCK_SIZE": 8}, num_warps=1),
+        triton.Config({"BLOCK_SIZE": 2}, num_warps=2),
+        triton.Config({"BLOCK_SIZE": 16}, num_warps=4),
+        triton.Config({"BLOCK_SIZE": 32}, num_warps=4),
+    ],
+    key=["M"],  # 当张量大小变化时触发调优
+)
+# @libentry()
+@triton.jit
+def min_kernel_3(inp, out, M, BLOCK_SIZE: tl.constexpr):
+    pid = tl.program_id(0)
+    start = pid * BLOCK_SIZE
+    offsets = start + tl.arange(0, BLOCK_SIZE)
+    mask = offsets < M
+    x = tl.load(inp + offsets, mask=mask)
+    min_val = tl.min(x, axis=None)
+    tl.atomic_min(out, min_val)
 
 
 def heur_block_n(args):
     return triton.next_power_of_2(args["N"])
 
 
-@libentry()
-@libtuner(
-    configs=runtime.get_tuned_config("naive_reduction"),
-    key=["M", "N"],
+# @libentry()
+@triton.autotune(
+    configs=runtime.get_tuned_config("min"),
+    key=[
+        "M",
+        "N",
+    ],
 )
 @triton.jit
 def min_kernel(
@@ -63,25 +83,23 @@ def min_kernel(
     out_index,
     M,
     N,
+    K,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
 ):
     # set offset
     pid_m = tle.program_id(0)
+    pid_k = tle.program_id(1)
     m_offset = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
 
-    dtype = inp.type.element_ty
-    # you just cannot create a function that return a tl.dtype in triton lang
-    acc_type = tl.float32 if dtype is tl.bfloat16 else dtype
-    max_value = get_dtype_max(dtype)
-    min_values = tl.full([BLOCK_M], dtype=acc_type, value=max_value)
+    min_values = tl.full([BLOCK_M], dtype=tl.float32, value=float("inf"))
     argmin_values = tl.full([BLOCK_M], dtype=tl.int64, value=0)
     for start_n in range(0, N, BLOCK_N):
         n_offset = start_n + tl.arange(0, BLOCK_N)
-        offset = m_offset[:, None] * N + n_offset[None, :]
+        offset = m_offset[:, None] * N * K + n_offset[None, :] * K + pid_k
         mask = m_offset[:, None] < M and n_offset[None, :] < N
         inp_ptrs = inp + offset
-        inp_vals = tl.load(inp_ptrs, mask=mask, other=max_value)
+        inp_vals = tl.load(inp_ptrs, mask=mask, other=float("inf"))
         local_min, local_argmin = tl.min(inp_vals, 1, return_indices=True)
         # if return indices is not supported, call a tl.argmax in addition
         # local_argmin = tl.argmin(inp_vals, 1)
@@ -89,7 +107,7 @@ def min_kernel(
         min_values = tl.where(update, local_min, min_values)
         argmin_values = tl.where(update, start_n + local_argmin, argmin_values)
 
-    offset_index = m_offset
+    offset_index = m_offset * K + pid_k
     out_value_ptrs = out_value + offset_index
     out_index_ptrs = out_index + offset_index
     mask1 = m_offset < M
@@ -98,7 +116,7 @@ def min_kernel(
 
 
 def min(inp):
-    logger.debug("GEMS MIN")
+    logging.debug("GEMS MIN")
     M = inp.numel()
     block_size = triton.next_power_of_2(math.ceil(math.sqrt(M)))
     mid_size = triton.cdiv(M, block_size)
@@ -107,15 +125,14 @@ def min(inp):
     dtype = inp.dtype
     mid = torch.empty((mid_size,), dtype=dtype, device=inp.device)
     out = torch.empty([], dtype=dtype, device=inp.device)
-
-    with torch_device_fn.device(inp.device):
-        min_kernel_1[(mid_size, 1, 1)](inp, mid, M, block_size)
-        min_kernel_2[(1, 1, 1)](mid, out, mid_size, block_mid)
+    # Use two-stage reduction for broader dtype support on Triton CPU.
+    min_kernel_1[(mid_size, 1, 1)](inp, mid, M, block_size)
+    min_kernel_2[(1, 1, 1)](mid, out, mid_size, block_mid)
     return out
 
 
 def min_dim(inp, dim=None, keepdim=False):
-    logger.debug("GEMS MIN DIM")
+    logging.debug("GEMS MIN DIM")
     assert dim >= -inp.ndim and dim < inp.ndim, "Invalid dim"
     dim = dim % inp.ndim
     inp_np = inp.detach().cpu().numpy()

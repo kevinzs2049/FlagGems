@@ -1,5 +1,6 @@
 import logging
 import math
+import builtins
 
 import torch
 import triton
@@ -7,7 +8,7 @@ import triton.language as tl
 
 from flag_gems import runtime
 from flag_gems.runtime import torch_device_fn
-from flag_gems.utils import dim_compress, libentry, libtuner
+from flag_gems.utils import dim_compress, libentry
 from flag_gems.utils import triton_lang_extension as tle
 
 logger = logging.getLogger(__name__)
@@ -23,10 +24,7 @@ def reduce_all(a, b):
 
 
 @libentry()
-@libtuner(
-    configs=runtime.get_tuned_config("naive_reduction"),
-    key=["M", "N"],
-)
+@triton.autotune(configs=runtime.get_tuned_config("all"), key=["M", "N"])
 @triton.jit
 def all_kernel_dim(
     inp,
@@ -132,7 +130,7 @@ def all_dims(inp, dim=None, keepdim=False):
 
     if dim is None or isinstance(dim, int):
         return all_dim(inp, dim=dim, keepdim=keepdim)
-    assert ((i >= -inp.ndim and i < inp.ndim) for i in dim), "Invalid dim"
+    assert builtins.all((i >= -inp.ndim and i < inp.ndim) for i in dim), "Invalid dim"
 
     shape = list(inp.shape)
     dim = [d % inp.ndim for d in dim]

@@ -7,26 +7,23 @@ import triton
 import triton.language as tl
 
 from flag_gems import runtime
-from flag_gems.runtime import torch_device_fn
 from flag_gems.utils import dim_compress, libentry
 from flag_gems.utils import triton_lang_extension as tle
 
-logger = logging.getLogger(__name__)
-
-# torch.any: Tests if any elements in input evaluate to True. If the dtype of input
-#            is not BOOL, then test if any elements in input evaluate to non-zero value
-# In triton function, test if any elements in input evaluate to non-zero value is ok.
+# torch.all: Tests if all elements in input evaluate to True. If the dtype of input
+#            is not BOOL, then test if all elements in input evaluate to non-zero value
+# In triton function, test if all elements in input evaluate to non-zero value is ok.
 
 
 @triton.jit
-def reduce_any(a, b):
-    return a or b
+def reduce_all(a, b):
+    return a and b
 
 
-@libentry()
-@triton.autotune(configs=runtime.get_tuned_config("any"), key=["M", "N"])
+# @libentry()
+@triton.autotune(configs=runtime.get_tuned_config("all"), key=["M", "N"])
 @triton.jit
-def any_kernel_dim(
+def all_kernel_dim(
     inp,
     out,
     M,
@@ -41,21 +38,21 @@ def any_kernel_dim(
     out = out + rows
     row_mask = rows < M
 
-    _any = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.int1)
+    _all = tl.full([BLOCK_M, BLOCK_N], value=1, dtype=tl.int1)
     for off in range(0, N, BLOCK_N):
         cols = off + tl.arange(0, BLOCK_N)[None, :]
         col_mask = cols < N
         mask = row_mask and col_mask
 
-        a = tl.load(inp + cols, mask, other=0.0)
-        _any = _any or (a != 0)
-    any = tl.reduce(_any, axis=1, combine_fn=reduce_any)
-    tl.store(out, any[:, None], row_mask)
+        a = tl.load(inp + cols, mask, other=1.0)
+        _all = _all and (a != 0)
+    all = tl.reduce(_all, axis=1, combine_fn=reduce_all)
+    tl.store(out, all[:, None], row_mask)
 
 
-@libentry()
+# @libentry()
 @triton.jit
-def any_kernel_1(
+def all_kernel_1(
     inp,
     mid,
     n_elements,
@@ -66,25 +63,25 @@ def any_kernel_1(
     offset = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     inp_ptrs = inp + offset
     mask = offset < n_elements
-    inp_val = tl.load(inp_ptrs, mask=mask, other=0.0)
-    any_val = tl.reduce(inp_val != 0, axis=0, combine_fn=reduce_any)
+    inp_val = tl.load(inp_ptrs, mask=mask, other=1.0)
+    all_val = tl.reduce(inp_val != 0, axis=0, combine_fn=reduce_all)
     mid_ptr = mid + pid
-    tl.store(mid_ptr, any_val)
+    tl.store(mid_ptr, all_val)
 
 
-@libentry()
+# @libentry()
 @triton.jit
-def any_kernel_2(mid, out, MID_SIZE, BLOCK_MID: tl.constexpr):
+def all_kernel_2(mid, out, MID_SIZE, BLOCK_MID: tl.constexpr):
     offset = tl.arange(0, BLOCK_MID)
     mid_ptrs = mid + offset
     mask = offset < MID_SIZE
-    mid_val = tl.load(mid_ptrs, mask=mask, other=0).to(tl.int1)
-    any_val = tl.reduce(mid_val, axis=0, combine_fn=reduce_any)
-    tl.store(out, any_val)
+    mid_val = tl.load(mid_ptrs, mask=mask, other=1).to(tl.int1)
+    all_val = tl.reduce(mid_val, axis=0, combine_fn=reduce_all)
+    tl.store(out, all_val)
 
 
-def any(inp):
-    logger.debug("GEMS ANY")
+def all(inp):
+    logging.debug("GEMS ALL")
     n_elements = inp.numel()
     block_size = triton.next_power_of_2(math.ceil(math.sqrt(n_elements)))
     mid_size = triton.cdiv(n_elements, block_size)
@@ -93,18 +90,18 @@ def any(inp):
     mid = torch.empty((mid_size,), dtype=torch.bool, device=inp.device)
     out = torch.empty([], dtype=torch.bool, device=inp.device)
 
-    with torch_device_fn.device(inp.device):
-        any_kernel_1[(mid_size, 1)](inp, mid, n_elements, mid_size, block_size)
-        any_kernel_2[(1, 1)](mid, out, mid_size, block_mid)
+    # with torch_device_fn.device(inp.device):
+    all_kernel_1[(mid_size, 1)](inp, mid, n_elements, mid_size, block_size)
+    all_kernel_2[(1, 1)](mid, out, mid_size, block_mid)
 
     return out
 
 
-def any_dim(inp, dim=None, keepdim=False):
-    logger.debug("GEMS ANY DIM")
+def all_dim(inp, dim=None, keepdim=False):
+    logging.debug("GEMS ALL DIM")
     shape = list(inp.shape)
     if dim is None:
-        out = any(inp)
+        out = all(inp)
         if keepdim:
             out = torch.reshape(out, [1] * inp.ndim)
     else:
@@ -118,18 +115,18 @@ def any_dim(inp, dim=None, keepdim=False):
         out = torch.empty(shape, dtype=torch.bool, device=inp.device)
 
         grid = lambda meta: (triton.cdiv(M, meta["BLOCK_M"]),)
-        with torch_device_fn.device(inp.device):
-            any_kernel_dim[grid](inp, out, M, N)
+        # with torch_device_fn.device(inp.device):
+        all_kernel_dim[grid](inp, out, M, N)
         if not keepdim:
             out = out.squeeze(dim=dim)
     return out
 
 
-def any_dims(inp, dim=None, keepdim=False):
-    logger.debug("GEMS ANY DIMS")
+def all_dims(inp, dim=None, keepdim=False):
+    logging.debug("GEMS ALL DIMS")
 
     if dim is None or isinstance(dim, int):
-        return any_dim(inp, dim=dim, keepdim=keepdim)
+        return all_dim(inp, dim=dim, keepdim=keepdim)
     assert builtins.all((i >= -inp.ndim and i < inp.ndim) for i in dim), "Invalid dim"
 
     shape = list(inp.shape)
@@ -144,8 +141,7 @@ def any_dims(inp, dim=None, keepdim=False):
     out = torch.empty(shape, dtype=torch.bool, device=inp.device)
 
     grid = lambda meta: (triton.cdiv(M, meta["BLOCK_M"]),)
-    with torch_device_fn.device(inp.device):
-        any_kernel_dim[grid](inp, out, M, N)
+    all_kernel_dim[grid](inp, out, M, N)
     if not keepdim:
         out = out.squeeze(dim=dim)
     return out
