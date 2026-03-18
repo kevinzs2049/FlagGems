@@ -5,7 +5,7 @@ from typing import List, Optional, Tuple
 
 import torch
 
-FLOAT_DTYPES = [torch.float16, torch.float32, torch.bfloat16]
+FLOAT_DTYPES = [torch.float16, torch.float32] # , torch.bfloat16]
 INT_DTYPES = [torch.int16, torch.int32]
 BOOL_DTYPES = [torch.bool]
 COMPLEX_DTYPES = [torch.complex64]
@@ -29,30 +29,26 @@ DEFAULT_SHAPES = [
 ]
 
 
-def model_shapes():
+# This function is adapted from: https://github.com/pytorch-labs/tritonbench/blob/main/tritonbench/utils/triton_op.py
+def llama_shapes():
     # batch sizes * seq lengths
-    BS = [1, 2, 3, 4, 8, 98, 256, 8192]
+    BS = [2**i for i in range(0, 17)]
     # attn: wqkv, wo; ffn: w13, w2
-    NK = [
-        # extract from llama3-8b
-        (1024, 4096),
-        (128256, 4096),
-        (14336, 4096),
-        (4096, 14336),
+    KN = [
+        (4096, 12288),
         (4096, 4096),
-        (6144, 4096),
-        (28672, 4096),
-        # extract from qwen2.5-7b
-        (3584, 3584),
-        (18944, 3584),
-        (3584, 18944),
-        (152064, 3584),
-        (37888, 3584),
-        (512, 3584),
-        (4608, 3584),
+        (4096, 22016),
+        (11008, 4096),
+        (8192, 1280),
+        (1024, 8192),
+        (8192, 7168),
+        (3584, 8192),
+        (16384, 2304),
+        (2048, 16384),
+        (16384, 13312),
+        (6656, 16384),
     ]
-
-    return [(4, bs, n, k) for bs, (n, k) in itertools.product(BS, NK)]
+    return [(bs, n, k, None) for bs, (k, n) in itertools.product(BS, KN)]
 
 
 @dataclass
@@ -136,12 +132,6 @@ def get_recommended_shapes(
         # TODO: handle situation that list as the basic element in shape.
         return _shapes_sort(op_specified_shapes)
     return _shapes_sort(DEFAULT_SHAPES)
-
-
-class BenchMode(Enum):
-    KERNEL = "kernel"
-    OPERATOR = "operator"
-    WRAPPER = "wrapper"
 
 
 class BenchLevel(Enum):
