@@ -45,9 +45,18 @@ class SiluAndMul(torch.autograd.Function):
 
 
 def silu_and_mul(A, B):
+    if A.device.type == "cpu":
+        # CPU fallback: avoid pointwise_dynamic Triton kernel instability on triton-cpu
+        x_fp32 = A.to(torch.float32)
+        return (torch.nn.functional.silu(x_fp32) * B.to(torch.float32)).to(A.dtype)
     return SiluAndMul.apply(A, B)
 
 
 def silu_and_mul_out(A, B, out):
+    if A.device.type == "cpu":
+        x_fp32 = A.to(torch.float32)
+        result = (torch.nn.functional.silu(x_fp32) * B.to(torch.float32)).to(A.dtype)
+        out.copy_(result)
+        return out
     silu_and_mul_kernel(A, B, out0=out)
     return out
