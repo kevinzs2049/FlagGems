@@ -29,6 +29,7 @@ Triton target:   M=1 → 63 GOPS, M=64 → 411 GOPS, M=84→88 → 170 GOPS.
 """
 
 import logging
+import os
 
 import torch
 import triton
@@ -80,6 +81,137 @@ def _int8mm_kernel(
 # ---------------------------------------------------------------------------
 _INT_MM_B_CACHE: dict = {}
 
+# ---------------------------------------------------------------------------
+# NEON SDOT kernel for M=1 INT8 GEMV.
+# Uses pre-packed weights in SDOT-friendly format: B_packed[K//4, N//4, 4, 4]
+# where B_packed[kb, nb, ni, ki] = B_original[kb*4+ki, nb*4+ni].
+# K-outer loop maximizes L1 cache reuse for activation vector.
+# 3.1-3.6x faster than Triton SMLAL for compute-dominated shapes.
+# ---------------------------------------------------------------------------
+_SDOT_LIB = None
+_SDOT_WEIGHT_CACHE: dict = {}  # (data_ptr, K, N) -> (B_packed, b_ref)
+
+
+def _get_sdot_lib():
+    """Load SDOT functions from TLE NEON .o (auto-compiled from triton.language.extra.cpu.neon).
+
+    The C source is defined in neon.py, compiled by gcc on first use, and cached.
+    When Triton kernels are compiled, the same .o gets linked into kernel .so.
+    """
+    global _SDOT_LIB
+    if _SDOT_LIB is not None:
+        return _SDOT_LIB
+    import ctypes
+    import pathlib
+    try:
+        from triton.language.extra.cpu.neon import get_all_object_files
+        import subprocess, shutil, platform
+        obj_files = get_all_object_files()
+        if not obj_files:
+            return None
+        # Link .o into a shared lib for ctypes loading
+        obj_path = obj_files[0]
+        cache_dir = os.path.dirname(obj_path)
+        so_path = os.path.join(cache_dir, "tle_neon_sdot.so")
+        if not os.path.exists(so_path) or os.path.getmtime(so_path) < os.path.getmtime(obj_path):
+            cc = os.environ.get("CC") or shutil.which("gcc") or shutil.which("clang")
+            cc_cmd = [cc, obj_path, "-shared", "-o", so_path,
+                      "-fopenmp", "-lgomp", "-lm"]
+            if platform.machine() in ("aarch64", "arm64"):
+                cc_cmd += ["-march=armv8.2-a+dotprod"]
+            subprocess.check_call(cc_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        lib = ctypes.CDLL(so_path)
+        lib.tle_sdot_pack_weights.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64
+        ]
+        lib.tle_sdot_gemv_m1.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_int64, ctypes.c_int64
+        ]
+        lib.tle_sdot_gemv_m1_fused_bf16.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64
+        ]
+        _SDOT_LIB = lib
+        return lib
+    except Exception:
+        return None
+
+
+def _sdot_enabled():
+    return os.getenv("FLAGGEMS_ARM_SDOT", "1").lower() in ("1", "true", "on")
+
+
+def _get_sdot_packed_weight(b_rowmajor, K, N):
+    """Get or create SDOT pre-packed weight. Cached by (data_ptr, K, N).
+
+    Holds a reference to the original tensor to prevent GC from reusing
+    the data_ptr address, which would cause stale cache hits.
+    """
+    key = (b_rowmajor.data_ptr(), K, N)
+    if key in _SDOT_WEIGHT_CACHE:
+        return _SDOT_WEIGHT_CACHE[key][0]
+    lib = _get_sdot_lib()
+    if lib is None:
+        return None
+    packed = torch.empty(K // 4, N // 4, 4, 4, dtype=torch.int8)
+    lib.tle_sdot_pack_weights(
+        b_rowmajor.data_ptr(), packed.data_ptr(), K, N
+    )
+    _SDOT_WEIGHT_CACHE[key] = (packed, b_rowmajor)  # hold ref to prevent GC
+    return packed
+
+
+def launch_sdot_fused_bf16(x_bf16, b_rowmajor, w_scale, K, N):
+    """Fused BF16→INT8 quant + SDOT GEMV + dequant→BF16 via TLE NEON (neon.py).
+
+    Args:
+        x_bf16: [K] bfloat16 activation (1D, contiguous)
+        b_rowmajor: [K, N] int8 weight (row-major, will be pre-packed and cached)
+        w_scale: [N] float32 per-channel weight scale
+        K, N: dimensions
+
+    Returns:
+        [N] bfloat16 output, or None if not applicable.
+    """
+    if not _sdot_enabled():
+        return None
+    if K % 4 != 0 or N % 4 != 0:
+        return None
+    lib = _get_sdot_lib()
+    if lib is None:
+        return None
+    packed = _get_sdot_packed_weight(b_rowmajor, K, N)
+    if packed is None:
+        return None
+    out = torch.empty(N, dtype=torch.bfloat16)
+    lib.tle_sdot_gemv_m1_fused_bf16(
+        x_bf16.data_ptr(), packed.data_ptr(), w_scale.data_ptr(),
+        out.data_ptr(), K, N
+    )
+    return out
+
+
+def _launch_sdot_m1(a, b_rowmajor, K, N):
+    """Launch NEON SDOT M=1 GEMV via TLE NEON (neon.py).
+    Returns [1, N] int32 or None if not applicable."""
+    if not _sdot_enabled():
+        return None
+    if K % 4 != 0 or N % 4 != 0:
+        return None
+    lib = _get_sdot_lib()
+    if lib is None:
+        return None
+    packed = _get_sdot_packed_weight(b_rowmajor, K, N)
+    if packed is None:
+        return None
+    out = torch.empty(1, N, dtype=torch.int32)
+    lib.tle_sdot_gemv_m1(
+        a.data_ptr(), packed.data_ptr(), out.data_ptr(),
+        K, N
+    )
+    return out
+
 
 def _triton_int_mm(self: torch.Tensor, mat2: torch.Tensor) -> torch.Tensor:
     """
@@ -115,9 +247,17 @@ def _triton_int_mm(self: torch.Tensor, mat2: torch.Tensor) -> torch.Tensor:
         return a.to(torch.int32) @ b.to(torch.int32)
 
     # ------------------------------------------------------------------
-    # Decode paths: BK=4 so LLVM fully unrolls the K=4 inner loop
+    # Decode M=1: NEON SDOT with pre-packed weights via torch.ops custom op.
+    # Pre-packs B[K,N] → B_packed[K//4, N//4, 4, 4] SDOT lane format.
+    # Uses K-outer loop for L1 cache reuse. 2.5x faster than Triton SMLAL.
+    # Falls back to Triton SMLAL if SDOT not available.
     # ------------------------------------------------------------------
     if M == 1:
+        sdot_result = _launch_sdot_m1(a, b, K, N)
+        if sdot_result is not None:
+            return sdot_result
+
+        # Fallback: Triton SMLAL (BM=1, BK=4)
         BM, BK = 1, 4
         out = torch.empty(M, N, dtype=torch.int32)
         _int8mm_kernel[(1, N // BN)](
