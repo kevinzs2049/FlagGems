@@ -29,6 +29,9 @@ MM_GENERIC_CONFIG_TABLE = (
 MM_M1_CONFIG_TABLE = (
     # Keep very large vocab projection on the generic kernel.
     {"n_min": 65536, "k_min": 0, "config": None},
+    # Qwen3-4B gate/up (N=9728, K=2560): BN=64 BK=16 is 9% faster.
+    # K≥2560 threshold avoids regressing 1.7B (K=2048) shapes.
+    {"n_min": 4096, "k_min": 2560, "config": (64, 16)},
     {"n_min": 2048, "k_min": 0, "config": (32, 8)},
     # Small N (e.g. k/v_proj N=128): use smaller BLOCK_N for better efficiency.
     {"n_min": 256, "k_min": 3072, "config": (128, 8)},
