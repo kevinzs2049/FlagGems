@@ -100,9 +100,12 @@ def addmm_m1_kernel(
         a_ptrs += BLOCK_K * stride_ak
         b_ptrs += BLOCK_K * stride_bk
 
-    bias_ptrs = i_ptr + rn * stride_in
-    bias = tl.load(bias_ptrs, mask=rn < N, other=0.0).to(tl.float32)
-    out = acc * alpha + bias * beta
+    if beta == 0:
+        out = acc * alpha
+    else:
+        bias_ptrs = i_ptr + rn * stride_in
+        bias = tl.load(bias_ptrs, mask=rn < N, other=0.0).to(tl.float32)
+        out = acc * alpha + bias * beta
     c_ptrs = c_ptr + rn * stride_cn
     tl.store(c_ptrs, out.to(c_ptr.dtype.element_ty), mask=rn < N)
 
@@ -153,9 +156,12 @@ def addmm_m1_transposed_rhs_kernel(
         a_ptrs += BLOCK_K * stride_ak
         bt_ptrs += BLOCK_K * stride_bk
 
-    bias_ptrs = i_ptr + rn * stride_in
-    bias = tl.load(bias_ptrs, mask=rn < N, other=0.0).to(tl.float32)
-    out = acc * alpha + bias * beta
+    if beta == 0:
+        out = acc * alpha
+    else:
+        bias_ptrs = i_ptr + rn * stride_in
+        bias = tl.load(bias_ptrs, mask=rn < N, other=0.0).to(tl.float32)
+        out = acc * alpha + bias * beta
     c_ptrs = c_ptr + rn * stride_cn
     tl.store(c_ptrs, out.to(c_ptr.dtype.element_ty), mask=rn < N)
 
@@ -261,10 +267,13 @@ def addmm_kernel(
     offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
-    i_ptrs = i_ptr + stride_im * offs_cm[:, None] + stride_in * offs_cn[None, :]
-    bias = tl.load(i_ptrs, mask=c_mask, other=0.0)
-    accumulator = accumulator * alpha + bias * beta
-    c = accumulator.to(bias.dtype)
+    if beta == 0:
+        c = (accumulator * alpha).to(c_ptr.dtype.element_ty)
+    else:
+        i_ptrs = i_ptr + stride_im * offs_cm[:, None] + stride_in * offs_cn[None, :]
+        bias = tl.load(i_ptrs, mask=c_mask, other=0.0)
+        accumulator = accumulator * alpha + bias * beta
+        c = accumulator.to(bias.dtype)
     c_ptrs = c_ptr + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
     tl.store(c_ptrs, c, mask=c_mask)
 
