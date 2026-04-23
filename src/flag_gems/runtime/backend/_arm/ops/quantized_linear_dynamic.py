@@ -305,18 +305,59 @@ def _triton_quantized_linear_dynamic(X, W_prepack, reduce_range=False):
         )
 
     # ------------------------------------------------------------------
-    # Prefill path (M≥3): BK=32, tiled weight, Dynamic ForOp target.
-    # BM=64 for large aligned M; BM=8 for all others (pad if M%8≠0).
-    # Zero-padding extra rows costs ~5% work but gains 40-80% GOPS.
+    # Prefill path (M≥3).
+    #
+    # Routing observed empirically via A/B vs commit 80be6a2e^:
+    #   M%64==0   → legacy _i8mm_kernel (fused kernel regresses ~15-20%
+    #                here due to BM=64 BK=32 epilog register pressure).
+    #   M=4       → legacy BM=1 BK=4 (BM=4 BK=32 SVE2 static path is slower
+    #                than BM=1 BK=4 ConvertDotGeneric for this tiny shape).
+    #   M%8==0    → fused kernel BM=8 BK=32 (SVE2 i8mm Dynamic ForOp, ~1.4x).
+    #   otherwise → pad to %8, fused BM=8 BK=32.
     # ------------------------------------------------------------------
+    elif M % 64 == 0:
+        # Legacy path: external quant → _i8mm_kernel (int8×int8→int32) → external dequant.
+        # Fused kernel's BM=64 epilog hurts LLVM register allocation here.
+        BM, BN, BK = 64, 64, 32
+        # NOTE: no .round_() — match fused kernel's .to(int8) truncate behavior.
+        # Rounding here (when fused kernel truncates) creates argmax drift at
+        # long generations because this M's rounding mode differs from other M's.
+        x_q = (x2d * inv_x_scale).clamp_(-128, 127).to(torch.int8)
+        c_i32 = torch.empty(M, N, dtype=torch.int32)
+        _i8mm_kernel[(M // BM, N // BN)](
+            x_q, weight_kn, c_i32,
+            M, N, K,
+            x_q.stride(0), x_q.stride(1),
+            weight_kn.stride(0), weight_kn.stride(1),
+            c_i32.stride(0), c_i32.stride(1),
+            BLOCK_M=BM, BLOCK_N=BN, BLOCK_K=BK,
+        )
+        out2d = c_i32.to(torch.float32).mul_(out_scale)
+
+    elif M == 4:
+        # Legacy BM=1 BK=4 path: faster than BM=4 BK=32 static i8mm here.
+        BM, BN, BK = 1, 64, 4
+        # NOTE: no .round_() — match fused kernel's .to(int8) truncate behavior.
+        # Rounding here (when fused kernel truncates) creates argmax drift at
+        # long generations because this M's rounding mode differs from other M's.
+        x_q = (x2d * inv_x_scale).clamp_(-128, 127).to(torch.int8)
+        c_i32 = torch.empty(M, N, dtype=torch.int32)
+        _i8mm_kernel[(M, N // BN)](
+            x_q, weight_kn, c_i32,
+            M, N, K,
+            x_q.stride(0), x_q.stride(1),
+            weight_kn.stride(0), weight_kn.stride(1),
+            c_i32.stride(0), c_i32.stride(1),
+            BLOCK_M=BM, BLOCK_N=BN, BLOCK_K=BK,
+        )
+        out2d = c_i32.to(torch.float32).mul_(out_scale)
+
     else:
+        # Fused kernel path: BM=8 BK=32 (Dynamic ForOp SVE2 i8mm, wins here).
         use_tiled = weight_tiled is not None
         BN, BK = 64, 32
 
-        if M % 64 == 0:
-            BM = 64
-            x_kernel, M_kernel = x2d, M
-        elif M % 8 == 0:
+        if M % 8 == 0:
             BM = 8
             x_kernel, M_kernel = x2d, M
         elif _ENABLE_PADDING:
@@ -327,7 +368,7 @@ def _triton_quantized_linear_dynamic(X, W_prepack, reduce_range=False):
             x_kernel = torch.zeros(M_kernel, K, dtype=x2d.dtype)
             x_kernel[:M].copy_(x2d)
         else:
-            # Phase 3 fallback: BM=4 static path (no padding)
+            # Phase 3 fallback: no padding, BM=4 if aligned else BM=1
             BM = 4 if M % 4 == 0 else 1
             x_kernel, M_kernel = x2d, M
 
