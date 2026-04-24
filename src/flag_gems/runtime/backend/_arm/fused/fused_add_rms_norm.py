@@ -81,44 +81,12 @@ def _fused_add_rms_norm_kernel(
         tl.store(in_row + cols, y, mask=mask)
 
 
-@triton.jit(do_not_specialize=["eps"])
-def _rms_norm_kernel(
-    input_ptr,
-    weight_ptr,
-    output_ptr,
-    in_stride_r,
-    out_stride_r,
-    N,
-    eps,
-    BLOCK_SIZE: tl.constexpr,
-):
-    """RMS norm without residual add: output = rms_norm(input) * weight.
-
-    Two-pass tiled approach for fast LLVM compilation.
-    """
-    pid = tle.program_id(0)
-    in_row = input_ptr + pid * in_stride_r
-    out_row = output_ptr + pid * out_stride_r
-
-    # Pass 1: accumulate sum of squares
-    sum_sq = tl.zeros([1], dtype=tl.float32)
-    for off in range(0, N, BLOCK_SIZE):
-        cols = off + tl.arange(0, BLOCK_SIZE)
-        mask = cols < N
-        x = tl.load(in_row + cols, mask=mask, other=0.0).to(tl.float32)
-        sum_sq += tl.sum(x * x, axis=0)
-
-    var = sum_sq / N
-    rrms = 1.0 / tl.sqrt(var + eps)
-
-    # Pass 2: normalize and write output
-    for off in range(0, N, BLOCK_SIZE):
-        cols = off + tl.arange(0, BLOCK_SIZE)
-        mask = cols < N
-        x = tl.load(in_row + cols, mask=mask, other=0.0).to(tl.float32)
-        w = tl.load(weight_ptr + cols, mask=mask, other=0.0)
-        y = (x * rrms).to(output_ptr.dtype.element_ty) * w
-        tl.store(out_row + cols, y, mask=mask)
+# Note: standalone _rms_norm_kernel (without residual add) was removed after
+# A/B measurement showed zero E2E benefit vs ATen's Qwen3RMSNorm on BF16 M=1
+# (see test_tle_phase1_plus.py ENABLE_RMSNORM_PATCH A/B, 3 rounds:
+#  ON=9.93 tok/s, OFF=9.97 tok/s — within noise).
+# The fused add+rmsnorm path is kept because it saves a residual-add memory
+# roundtrip and is used by vLLM's forward_cpu when residual is present.
 
 
 def _maybe_prewarm():
@@ -133,11 +101,6 @@ def _maybe_prewarm():
             w = torch.ones(_TILE_SIZE, dtype=dt, device="cpu")
             _fused_add_rms_norm_kernel[(1,)](
                 x, r, w, _TILE_SIZE, _TILE_SIZE, _TILE_SIZE, 1e-6,
-                BLOCK_SIZE=_TILE_SIZE, num_warps=1, num_stages=1,
-            )
-            out = torch.empty_like(x)
-            _rms_norm_kernel[(1,)](
-                x, w, out, _TILE_SIZE, _TILE_SIZE, _TILE_SIZE, 1e-6,
                 BLOCK_SIZE=_TILE_SIZE, num_warps=1, num_stages=1,
             )
     except Exception:
@@ -176,28 +139,6 @@ def fused_add_rms_norm(x, residual, normalized_shape, weight, eps=1e-5):
     return x, residual
 
 
-def rms_norm_forward(x, normalized_shape, weight, eps=1e-5):
-    """RMS normalization (without residual add).
-
-    Returns: normalized output tensor.
-    """
-    _maybe_prewarm()
-
-    dim = x.ndim - len(normalized_shape)
-    M = math.prod(x.shape[:dim])
-    N = math.prod(normalized_shape)
-
-    x = x.contiguous()
-    weight = weight.contiguous()
-    output = torch.empty_like(x)
-
-    _rms_norm_kernel[(M,)](
-        x, weight, output,
-        N,  # in_stride_r
-        N,  # out_stride_r
-        N, eps,
-        BLOCK_SIZE=_TILE_SIZE,
-        num_warps=1,
-        num_stages=1,
-    )
-    return output
+# rms_norm_forward() (standalone RMSNorm without residual) removed: A/B
+# measurement on Qwen3-1.7B INT8 decode showed no measurable benefit over
+# ATen's native Qwen3RMSNorm.forward (9.93 vs 9.97 tok/s, within noise).
