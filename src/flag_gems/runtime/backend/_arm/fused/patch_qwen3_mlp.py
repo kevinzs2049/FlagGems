@@ -82,21 +82,39 @@ class FusedMLPWrapper:
         return self.down_proj(self.act_fn(gate) * up)
 
 
-def patch_qwen3_mlp(model) -> int:
-    """Walk model, replace Qwen3MLP.forward with FusedMLPWrapper-based forward.
+def _get_qwen_mlp_classes() -> tuple:
+    """Return a tuple of MLP classes to patch (Qwen3MLP + Qwen3_5MLP if available).
 
-    Returns number of Qwen3MLP instances patched. Safe to call multiple times —
+    Both classes share the same structure (gate_proj, up_proj, down_proj, act_fn),
+    so the FusedMLPWrapper works on either.
+    """
+    classes = []
+    for modname, clsname in [
+        ("transformers.models.qwen3.modeling_qwen3", "Qwen3MLP"),
+        ("transformers.models.qwen3_5.modeling_qwen3_5", "Qwen3_5MLP"),
+    ]:
+        try:
+            mod = __import__(modname, fromlist=[clsname])
+            classes.append(getattr(mod, clsname))
+        except (ImportError, AttributeError):
+            pass
+    return tuple(classes)
+
+
+def patch_qwen3_mlp(model) -> int:
+    """Walk model, replace Qwen3MLP / Qwen3_5MLP forward with FusedMLPWrapper.
+
+    Returns number of MLP instances patched. Safe to call multiple times —
     each instance is patched once (tracked via id).
     """
-    try:
-        from transformers.models.qwen3.modeling_qwen3 import Qwen3MLP
-    except ImportError:
-        logger.debug("transformers Qwen3MLP not found, skipping patch")
+    mlp_classes = _get_qwen_mlp_classes()
+    if not mlp_classes:
+        logger.debug("No Qwen MLP classes found in transformers, skipping patch")
         return 0
 
     n = 0
     for name, module in list(model.named_modules()):
-        if isinstance(module, Qwen3MLP) and id(module) not in _PATCHED:
+        if isinstance(module, mlp_classes) and id(module) not in _PATCHED:
             wrapper = FusedMLPWrapper(
                 module.gate_proj, module.up_proj,
                 module.down_proj, module.act_fn,
@@ -109,19 +127,20 @@ def patch_qwen3_mlp(model) -> int:
             _PATCHED.add(id(module))
             n += 1
     if n > 0:
-        logger.info("Patched %d Qwen3MLP.forward with fused_mlp_bf16", n)
+        cls_names = ", ".join(c.__name__ for c in mlp_classes)
+        logger.info("Patched %d MLP modules (classes: %s) with fused_mlp_bf16",
+                    n, cls_names)
     return n
 
 
 def unpatch_qwen3_mlp(model) -> int:
-    """Restore original Qwen3MLP.forward (for testing / revert)."""
-    try:
-        from transformers.models.qwen3.modeling_qwen3 import Qwen3MLP
-    except ImportError:
+    """Restore original MLP forward (for testing / revert)."""
+    mlp_classes = _get_qwen_mlp_classes()
+    if not mlp_classes:
         return 0
     n = 0
     for name, module in list(model.named_modules()):
-        if isinstance(module, Qwen3MLP) and id(module) in _PATCHED:
+        if isinstance(module, mlp_classes) and id(module) in _PATCHED:
             if hasattr(module, "_original_forward"):
                 module.forward = module._original_forward
                 del module._original_forward
