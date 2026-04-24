@@ -43,6 +43,13 @@ _ensure_sleef()
 # 保存原始 ATen SDPA，内部 fallback 时使用（避免 monkey-patch 后无限递归）
 _aten_sdpa = F.scaled_dot_product_attention
 
+# Import once at module load. If triton-cpu lacks the runtime module (older
+# build), fall through to ATen for M=1 decode.
+try:
+    from triton.language.extra.cpu.runtime import flash_attn_decode_bf16 as _flash_attn_decode_bf16
+except ImportError:
+    _flash_attn_decode_bf16 = None
+
 # log2(e) = 1/ln(2) — 用于 exp2 代替 exp（避免 SLEEF 精度损失）
 _LOG2E: float = 1.44269504089
 
@@ -211,6 +218,31 @@ def scaled_dot_product_attention(
     """
     B, Hq, M, D = query.shape
 
+    # M=1 decode fast path: C runtime flash_attn_decode_bf16 via triton-cpu.
+    # Measured +1.2% E2E on Qwen3-1.7B INT8 vs ATen fallback (3 rounds A/B).
+    # Requires BF16, no mask, no dropout, contiguous Q/K/V.
+    if (_flash_attn_decode_bf16 is not None
+            and M == 1 and B == 1
+            and query.dtype == torch.bfloat16
+            and attn_mask is None
+            and dropout_p == 0.0
+            and query.is_contiguous()
+            and key.is_contiguous() and value.is_contiguous()):
+        Hkv = key.shape[1]
+        seq_len = key.shape[2]
+        sm_scale = scale if scale is not None else D ** -0.5
+        q_flat = query.squeeze(0).squeeze(1).contiguous()
+        k_flat = key.squeeze(0).contiguous()
+        v_flat = value.squeeze(0).contiguous()
+        out_flat = torch.empty(Hq, D, dtype=torch.bfloat16)
+        _flash_attn_decode_bf16(
+            q_flat, k_flat, v_flat, out_flat,
+            seq_len, D, sm_scale, Hq, Hkv,
+            k_flat.stride(1), v_flat.stride(1),
+        )
+        return out_flat.unsqueeze(0).unsqueeze(2)
+
+    # Prefill fast path: Triton Flash Attention kernel (requires M >= BLOCK_M).
     use_triton = (
         query.dtype == torch.bfloat16
         and attn_mask is None
