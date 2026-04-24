@@ -163,29 +163,26 @@ def _register_argmax():
 
 _register_argmax()
 
-# Override flag_gems.rms_norm and flag_gems.fused_add_rms_norm with ARM CPU versions.
-# The generic implementations (flag_gems/ops/rms_norm.py, flag_gems/fused/) use
-# LibEntry which indexes kernel_cache by GPU device count and calls CUDA-specific
-# Triton APIs — both fail on CPU-only ARM systems.
-# Our ARM fused kernels are already validated by patch_vllm_rmsnorm.py.
-def _override_rms_norm_with_arm():
+# Override flag_gems.fused_add_rms_norm with ARM CPU version.
+# Standalone rms_norm override removed: no measurable benefit vs ATen native
+# on Qwen3-1.7B INT8 decode (A/B 3 rounds: 9.93 vs 9.97 tok/s, within noise).
+# fused_add_rms_norm kept: saves a residual-add memory roundtrip (not yet
+# benchmarked separately but used by vLLM residual path).
+def _override_fused_add_rms_norm_with_arm():
     try:
         import flag_gems as _fg
-        from .rms_norm import rms_norm as _arm_rms_norm
         from .rms_norm import fused_add_rms_norm as _arm_fused_add_rms_norm
-        _fg.rms_norm = _arm_rms_norm
         _fg.fused_add_rms_norm = _arm_fused_add_rms_norm
         _logging.getLogger(__name__).debug(
-            "FlagGems ARM: overrode flag_gems.rms_norm / fused_add_rms_norm "
-            "with ARM Triton CPU kernels"
+            "FlagGems ARM: overrode flag_gems.fused_add_rms_norm with ARM Triton kernel"
         )
     except Exception as e:
         _logging.getLogger(__name__).warning(
-            f"FlagGems ARM: failed to override rms_norm: {e}"
+            f"FlagGems ARM: failed to override fused_add_rms_norm: {e}"
         )
 
 
-_override_rms_norm_with_arm()
+_override_fused_add_rms_norm_with_arm()
 
 
 # Override flag_gems.apply_rotary_pos_emb with ARM pure-PyTorch version.
