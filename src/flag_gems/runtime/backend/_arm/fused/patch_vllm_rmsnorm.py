@@ -8,7 +8,7 @@ import logging
 
 import torch
 
-from .fused_add_rms_norm import fused_add_rms_norm, rms_norm_forward
+from .fused_add_rms_norm import fused_add_rms_norm
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +29,9 @@ def _forward_cpu_fused(self, x, residual=None):
             x, residual, [self.hidden_size], weight, self.variance_epsilon
         )
         return normed, new_residual
-    else:
-        return rms_norm_forward(
-            x, [self.hidden_size], weight, self.variance_epsilon
-        )
+    # No-residual path: standalone RMSNorm had no measurable benefit vs ATen
+    # (see fused_add_rms_norm.py note); fall back to vLLM's native forward.
+    return self.forward_native(x, residual)
 
 
 def patch_vllm_rmsnorm():
