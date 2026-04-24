@@ -95,8 +95,16 @@ class TLEInt8Linear(torch.nn.Module):
         absmax = xf32.abs().amax(dim=1, keepdim=True).clamp(min=1e-8)
         x_scale = absmax / 127.0
         x_int8 = (xf32 / x_scale).clamp_(-128, 127).to(torch.int8)
-        out_i32 = torch._int_mm(x_int8, self._w_int8_kn)
-        out_f32 = out_i32.float() * x_scale * self._w_scale.unsqueeze(0)
+        try:
+            out_i32 = torch._int_mm(x_int8, self._w_int8_kn)
+            out_f32 = out_i32.float() * x_scale * self._w_scale.unsqueeze(0)
+        except Exception:
+            # FlagGems _int_mm may fall back to aten::mm with int32 operands,
+            # which re-enters FlagGems mm and fails for non-BF16 dtype.
+            # Use an fp32 matmul fallback that bypasses that chain.
+            w_fp32 = (self._w_int8_kn.to(torch.float32)
+                      * self._w_scale.unsqueeze(0))  # [K, N]
+            out_f32 = xf32 @ w_fp32  # dynamic quant of x was identity here
         return out_f32.to(torch.bfloat16).reshape(*shape[:-1], self.N)
 
     def extra_repr(self) -> str:
