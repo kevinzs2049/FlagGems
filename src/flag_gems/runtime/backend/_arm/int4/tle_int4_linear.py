@@ -94,7 +94,8 @@ class TLEInt4Linear(torch.nn.Module):
     unpacks i4→i8 on-the-fly and routes to torch._int_mm.
     """
 
-    def __init__(self, w_int4: torch.Tensor, w_scale: torch.Tensor):
+    def __init__(self, w_int4: torch.Tensor, w_scale: torch.Tensor,
+                  eager_unpack: bool = True):
         super().__init__()
         if w_int4.dtype != torch.int8:
             raise TypeError(f"w_int4 must be int8 (storing i4), got {w_int4.dtype}")
@@ -104,8 +105,16 @@ class TLEInt4Linear(torch.nn.Module):
         # _packed: [K/4, N/4, 4, 2] int8 — for decode SDOT W4
         self._packed = pack_w4_per_channel(w_kn)
         self._w_scale = w_scale.squeeze().to(torch.float32).contiguous()
-        # Lazy-built cache of [K, N] int8 unpacked weight for prefill _int_mm.
-        self._unpacked_kn = None
+        # Cache of [K, N] int8 unpacked weight for prefill _int_mm.
+        # Built eagerly by default — the lazy build is single-threaded torch
+        # ops on large tensors, which dominates per-call latency in PPL /
+        # multi-token forward eval. Costs ~K*N bytes per Linear (e.g. ~2 GB
+        # extra on Qwen3-4B). Set eager_unpack=False to defer (ok for pure
+        # decode workloads that never hit the prefill path).
+        if eager_unpack:
+            self._unpacked_kn = w_kn  # already int8 in [-7, 7], same memory
+        else:
+            self._unpacked_kn = None
 
     def _get_unpacked_kn(self) -> torch.Tensor:
         if self._unpacked_kn is None:
