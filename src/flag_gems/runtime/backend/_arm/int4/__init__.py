@@ -11,6 +11,10 @@ from .tle_int4_q40_linear import (  # noqa: F401
     dequant_w4_q4_0_to_kn,
 )
 from .quantize_live_q4_0 import quantize_q4_0_and_replace_linears  # noqa: F401
+from .tle_int4_q40_v2_linear import (  # noqa: F401
+    TLEInt4Q40V2Linear, quantize_w4_q4_0_v2, pack_q4_0_v2, dequant_q4_0_v2,
+)
+from .quantize_live_q4_0_v2 import quantize_q4_0_v2_and_replace_linears  # noqa: F401
 
 __all__ = [
     "TLEInt4Linear",
