@@ -20,6 +20,7 @@ import triton.language as tl
 
 from triton.language.extra.cpu.tle_ops import (
     sdot_gemv_q4_0_v2_bf16 as _cpu_q40_v2_gemv,
+    gemm_q4_0_v2_smmla_bf16 as _cpu_q40_v2_smmla_gemm,
 )
 
 
@@ -32,6 +33,15 @@ def _tle_q40_v2_gemv_kernel(
     K: tl.constexpr, N: tl.constexpr,
 ):
     _cpu_q40_v2_gemv(x_ptr, w_packed_ptr, out_ptr, K, N)
+
+
+@triton.jit
+def _tle_q40_v2_smmla_gemm_kernel(
+    x_ptr, w_packed_ptr, out_ptr,
+    M: tl.constexpr, K: tl.constexpr, N: tl.constexpr,
+):
+    """SMMLA prefill GEMM for M >= 2."""
+    _cpu_q40_v2_smmla_gemm(x_ptr, w_packed_ptr, out_ptr, M, K, N)
 
 
 def quantize_w4_q4_0_v2(w_kn: torch.Tensor):
@@ -150,7 +160,19 @@ class TLEInt4Q40V2Linear(torch.nn.Module):
                 xc, self._packed, out, K=self.K, N=self.N,
             )
             return out.reshape(*shape[:-1], self.N)
-        # Prefill / non-bf16: dequant → ATen mm
+
+        # Prefill (M >= 2): SMMLA i8mm path. N must be multiple of 2.
+        if (M >= 2 and x.dtype == torch.bfloat16
+                and self.N % 2 == 0):
+            x_2d = x.reshape(M, self.K).contiguous()
+            out_2d = torch.empty(M, self.N, dtype=torch.bfloat16)
+            _tle_q40_v2_smmla_gemm_kernel[(1,)](
+                x_2d, self._packed, out_2d,
+                M=M, K=self.K, N=self.N,
+            )
+            return out_2d.reshape(*shape[:-1], self.N)
+
+        # Fallback: dequant → ATen mm
         x_2d = x.reshape(-1, self.K).contiguous()
         out_2d = x_2d.to(torch.bfloat16) @ self._w_dequant_kn_bf16
         return out_2d.reshape(*shape[:-1], self.N)
