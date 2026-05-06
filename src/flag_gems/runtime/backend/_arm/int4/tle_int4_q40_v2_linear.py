@@ -102,7 +102,12 @@ def pack_q4_0_v2(w_nibbles_kn: torch.Tensor,
 
     # Concatenate along block-dim: 16 bytes nibbles + 2 bytes fp16 scale = 18 bytes
     out = torch.empty(N, K_blocks, 18, dtype=torch.int8)
-    out[:, :, :16] = bytes_n_first
+    # kxor: XOR the data bytes with 0x88. This rewrites each nibble from the
+    # unsigned [0..15] (encoding signed - 8) representation to its 4-bit
+    # two's-complement signed form, letting the SDOT kernel use shl/and
+    # tricks to skip the explicit subtract-8 step.
+    bytes_kxor = (bytes_n_first.to(torch.int32) ^ 0x88).to(torch.int8)
+    out[:, :, :16] = bytes_kxor
     # fp16 -> 2 bytes view as int8
     scales_bytes = scales_n_first.contiguous().view(torch.int8).reshape(N, K_blocks, 2)
     out[:, :, 16:] = scales_bytes
@@ -110,27 +115,24 @@ def pack_q4_0_v2(w_nibbles_kn: torch.Tensor,
 
 
 def dequant_q4_0_v2(w_packed: torch.Tensor, K: int, N: int) -> torch.Tensor:
-    """Inverse of pack_q4_0_v2: reconstruct a [K, N] bf16 weight from the
-    flat packed buffer. Used by prefill / fallback paths.
+    """Inverse of pack_q4_0_v2 (kxor variant): reconstruct a [K, N] bf16
+    weight from the flat packed buffer. Used by prefill / fallback paths.
     """
     K_blocks = K // 32
     assert w_packed.shape == (N, K_blocks, 18)
-    nibbles = w_packed[:, :, :16]    # [N, K_blocks, 16] int8 (each byte = 2 nibbles)
+    nibbles_kxor = w_packed[:, :, :16]    # [N, K_blocks, 16] int8 (XOR'd with 0x88)
     scales_bytes = w_packed[:, :, 16:].contiguous().view(torch.float16).reshape(N, K_blocks)
 
-    nib_i32 = nibbles.to(torch.int32) & 0xFF  # treat as unsigned bytes
-    lo = (nib_i32 & 0x0F)                     # k=0..15
-    hi = (nib_i32 >> 4) & 0x0F                # k=16..31
-    # Decoded signed values = nibble - 8
-    lo_s = (lo - 8).to(torch.int8)            # [N, K_blocks, 16]
+    # Undo the XOR 0x88 to recover the unsigned-nibble form, then decode.
+    nib_i32 = (nibbles_kxor.to(torch.int32) & 0xFF) ^ 0x88
+    lo = (nib_i32 & 0x0F)
+    hi = (nib_i32 >> 4) & 0x0F
+    lo_s = (lo - 8).to(torch.int8)
     hi_s = (hi - 8).to(torch.int8)
-    # Stack to [N, K_blocks, 32]
-    full = torch.cat([lo_s, hi_s], dim=-1).to(torch.float32)  # [N, K_blocks, 32]
-    # Multiply by per-block scale
-    full = full * scales_bytes.unsqueeze(-1).to(torch.float32)  # [N, K_blocks, 32]
-    # Reshape to [N, K] then transpose to [K, N]
+    full = torch.cat([lo_s, hi_s], dim=-1).to(torch.float32)
+    full = full * scales_bytes.unsqueeze(-1).to(torch.float32)
     w_nk = full.reshape(N, K)
-    return w_nk.t().contiguous().to(torch.bfloat16)  # [K, N] bf16
+    return w_nk.t().contiguous().to(torch.bfloat16)
 
 
 class TLEInt4Q40V2Linear(torch.nn.Module):
