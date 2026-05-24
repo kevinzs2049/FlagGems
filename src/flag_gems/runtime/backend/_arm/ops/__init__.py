@@ -6,7 +6,6 @@ from .arange import arange
 from .argmax import argmax
 from .attention import scaled_dot_product_attention
 from .bmm import bmm
-from .cat import cat
 from .cos import cos
 from .cumsum import cumsum
 from .div import (
@@ -25,7 +24,6 @@ from .full import full
 from .gather import gather
 from .gelu import gelu
 from .index_select import index_select
-from .index import index
 from .isin import isin
 from .log_softmax import log_softmax
 from .lt import lt
@@ -38,7 +36,6 @@ from .mul import mul, mul_
 from .multinomial import multinomial
 from .neg import neg, neg_
 from .ones import ones
-from .ones_like import ones_like
 from .pow import (
     pow_scalar,
     pow_tensor_scalar,
@@ -69,7 +66,6 @@ __all__ = [
     "arange",
     "argmax",
     "bmm",
-    "cat",
     "cos",
     "cumsum",
     "div_mode",
@@ -82,7 +78,6 @@ __all__ = [
     "gather",
     "gelu",
     "index_select",
-    "index",
     "isin",
     "log_softmax",
     "lt",
@@ -99,7 +94,6 @@ __all__ = [
     "neg",
     "neg_",
     "ones",
-    "ones_like",
     "pow_scalar",
     "pow_tensor_scalar",
     "pow_tensor_scalar_",
