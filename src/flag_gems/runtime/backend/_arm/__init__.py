@@ -404,8 +404,6 @@ CUSTOMIZED_UNUSED_OPS = (
     "zero_out",
     "add",
     "add_",
-    "addmm",
-    "addmm_out",
     "copy_",
     "cat",
     "index",

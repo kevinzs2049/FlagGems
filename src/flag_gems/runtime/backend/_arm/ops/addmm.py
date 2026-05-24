@@ -295,26 +295,32 @@ def addmm(bias, mat1, mat2, *, beta=1, alpha=1):
     bias = bias.broadcast_to(out_shape)
 
     if M == 1 and _use_addmm_m1_fastpath_shape(N, K):
-        bias_kernel = bias
         use_fp32_m1 = (
             mat1.dtype is torch.bfloat16
             or mat2.dtype is torch.bfloat16
             or bias.dtype is torch.bfloat16
         )
+        # BF16 masked_load on v8bf16 is not supported in AArch64 LLVM
+        # backend (fatal "Cannot select" error in addmm_m1_kernel bias
+        # tl.load). Cast all bf16 inputs to fp32 — matches the generic
+        # kernel path below.
+        mat1_kernel = mat1.to(torch.float32) if use_fp32_m1 else mat1
+        mat2_kernel = mat2.to(torch.float32) if use_fp32_m1 else mat2
+        bias_kernel = bias.to(torch.float32) if use_fp32_m1 else bias
         out_kernel = torch.empty(
             out_shape,
             device=mat1.device,
             dtype=(torch.float32 if use_fp32_m1 else mat1.dtype),
         )
-        if _is_rhs_transposed_layout(mat2) and _use_addmm_m1_transposed_fastpath_shape(
+        if _is_rhs_transposed_layout(mat2_kernel) and _use_addmm_m1_transposed_fastpath_shape(
             N, K
         ):
             _launch_addmm_m1_transposed_rhs_kernel(
-                mat1, mat2, bias_kernel, out_kernel, alpha, beta, N, K
+                mat1_kernel, mat2_kernel, bias_kernel, out_kernel, alpha, beta, N, K
             )
         else:
             _launch_addmm_m1_kernel(
-                mat1, mat2, bias_kernel, out_kernel, alpha, beta, N, K
+                mat1_kernel, mat2_kernel, bias_kernel, out_kernel, alpha, beta, N, K
             )
         return out_kernel.to(mat1.dtype) if use_fp32_m1 else out_kernel
 
